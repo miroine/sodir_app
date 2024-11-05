@@ -5,4 +5,5 @@ streamlit
 scipy
 seaborn
 statistics
+dash
 git+https://github.com/miroine/npd_data.git
