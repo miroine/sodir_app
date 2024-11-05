@@ -1,0 +1,8 @@
+plotly
+pandas
+numpy
+streamlit
+scipy
+seaborn
+statistics
+git+https://github.com/miroine/npd_data.git
