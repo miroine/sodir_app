@@ -4,7 +4,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 from npd_wraper import field
 
-from callbaks_figure import *
+from utils.callbaks_figure import *
 
 #from streamlit_option_menu import option_menu
 #from numerize.numerize import numerize
