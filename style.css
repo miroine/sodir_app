@@ -41,6 +41,21 @@ iframe[title="st.iframe"] {
     border-radius: var(--explorer-radius);
 }
 
+[data-testid="stSidebar"] [role="radiogroup"] label {
+    border-radius: 8px;
+    padding: 0.3rem 0.55rem;
+}
+
+[data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked) {
+    background: color-mix(in srgb, var(--explorer-accent) 16%, transparent);
+}
+
+.stApp button:focus-visible,
+.stApp a:focus-visible {
+    outline: 3px solid var(--explorer-accent);
+    outline-offset: 3px;
+}
+
 [data-testid="stSidebar"] {
     border-right: 1px solid color-mix(in srgb, var(--text-color) 12%, transparent);
 }

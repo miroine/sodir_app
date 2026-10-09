@@ -1,4 +1,6 @@
 from io import BytesIO
+from datetime import datetime, timezone
+from math import isfinite
 from urllib.request import urlopen
 
 import pandas as pd
@@ -45,7 +47,9 @@ def prepare_monthly(data):
     for column in PRODUCTION_COLUMNS:
         if column not in data:
             data[column] = float("nan")
-        data[column] = pd.to_numeric(data[column], errors="coerce")
+        data[column] = pd.to_numeric(data[column], errors="coerce").replace(
+            [float("inf"), float("-inf")], float("nan")
+        )
     return data
 
 
@@ -65,6 +69,7 @@ def load_dataset(name):
             raise ValueError("Unexpected SODIR table format.")
         if name == "monthly":
             data = prepare_monthly(data)
+        data.attrs["fetched_at"] = datetime.now(timezone.utc)
         return data
     except (OSError, ValueError, pd.errors.ParserError) as exc:
         raise DataUnavailable(f"SODIR {name} data is temporarily unavailable.") from exc
@@ -88,7 +93,12 @@ def daily_production(data):
 def latest_row(data):
     for column in ("fldDateOffResEstDisplay", "fldDateOffResEst"):
         if column in data:
-            dates = pd.to_datetime(data[column], errors="coerce", dayfirst=True)
+            text = data[column].astype("string")
+            iso = text.str.match(r"^\d{4}-\d{2}-\d{2}", na=False)
+            dates = pd.to_datetime(text.where(iso), errors="coerce", format="ISO8601")
+            dates = dates.fillna(pd.to_datetime(
+                text.where(~iso), errors="coerce", dayfirst=True, format="mixed",
+            ))
             data = data.assign(_estimate_date=dates).sort_values(
                 "_estimate_date", na_position="first"
             )
@@ -98,4 +108,4 @@ def latest_row(data):
 
 def number(row, column):
     value = pd.to_numeric(row.get(column), errors="coerce")
-    return float(value) if pd.notna(value) else None
+    return float(value) if pd.notna(value) and isfinite(float(value)) else None

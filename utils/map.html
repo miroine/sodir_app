@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SODIR field layer map</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+        integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+  <style>
+    body { margin: 0; font: 14px Arial, sans-serif; background: #eef3f8; color: #172b43; }
+    #map { height: 520px; background: #cbdde9; border-radius: 14px; }
+    #status { padding: 8px 12px; min-height: 20px; }
+    .dark { background: #142238; color: #ecf2fa; }
+    .dark .leaflet-control-layers, .dark .leaflet-control-attribution {
+      background: #142238; color: #ecf2fa;
+    }
+    .leaflet-control-layers { max-height: 300px; overflow-y: auto; }
+    .leaflet-control-layers label { line-height: 1.8; }
+  </style>
+</head>
+<body>
+  <div id="map" role="region" aria-label="Interactive SODIR field map"></div>
+  <div id="status" role="status" aria-live="polite">Loading map… If it does not load, use the official FactMaps link.</div>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+          integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+  <script>
+    const data = __MAP_DATA__;
+    const status = document.getElementById("status");
+    if (data.dark) document.body.classList.add("dark");
+    if (!window.L) {
+      status.textContent = "Map library unavailable. Use the official FactMaps link.";
+    } else {
+      try {
+        const map = L.map("map", {scrollWheelZoom: false}).setView([64, 5], 5);
+        const basemap = L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+          maxZoom: 18, attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+        }).addTo(map);
+        const reportError = () => {
+          status.textContent = "Some map tiles are unavailable. Field boundaries remain visible; try the official FactMaps link.";
+        };
+        basemap.on("tileerror", reportError);
+        const overlays = {};
+        data.layers.forEach((layer) => {
+          const overlay = L.tileLayer.wms(data.wms, {
+            layers: layer.name, version: "1.3.0", format: "image/png", transparent: true,
+            attribution: "© Sokkeldirektoratet", maxZoom: 18,
+          }).addTo(map);
+          overlay.on("tileerror", reportError);
+          overlays[layer.title + " (" + layer.name.replace(/[<>&"']/g, "") + ")"] = overlay;
+        });
+        const selected = L.featureGroup().addTo(map);
+        const label = document.createElement("span");
+        label.textContent = data.field;
+        data.geometry.lines.forEach((line) => {
+          L.polyline(line, {color: "#f6a623", weight: 4}).bindTooltip(label.cloneNode(true)).addTo(selected);
+        });
+        data.geometry.points.forEach((point) => {
+          L.circleMarker(point, {color: "#f6a623", radius: 8}).bindTooltip(label.cloneNode(true)).addTo(selected);
+        });
+        overlays["Selected field boundary / location"] = selected;
+        L.control.layers({"OpenStreetMap": basemap}, overlays).addTo(map);
+        const bounds = selected.getBounds();
+        if (bounds.isValid()) map.fitBounds(bounds, {padding: [45, 45], maxZoom: 11});
+        const home = L.control({position: "topleft"});
+        home.onAdd = () => {
+          const button = L.DomUtil.create("button", "leaflet-bar");
+          button.textContent = "⌖ Field";
+          button.title = "Recenter on selected field";
+          button.style.padding = "8px";
+          L.DomEvent.disableClickPropagation(button);
+          button.onclick = () => { if (bounds.isValid()) map.fitBounds(bounds, {padding: [45, 45], maxZoom: 11}); };
+          return button;
+        };
+        home.addTo(map);
+        status.textContent = "Selected field highlighted in amber. Pan, zoom and toggle overlays with the layer menu.";
+      } catch (error) {
+        status.textContent = "Unable to render this map. Use the official FactMaps link.";
+      }
+    }
+  </script>
+</body>
+</html>

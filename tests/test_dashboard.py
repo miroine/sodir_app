@@ -1,4 +1,5 @@
 from io import BytesIO
+from datetime import datetime, timezone
 from pathlib import Path
 import unittest
 from unittest.mock import patch
@@ -128,8 +129,56 @@ class CalculationTests(unittest.TestCase):
         finally:
             data.load_dataset.clear()
 
+    def test_mixed_estimate_dates_and_nonfinite_values(self):
+        estimates = pd.DataFrame({
+            "fldDateOffResEstDisplay": ["2024-01-12", "31.12.2023", None],
+            "fldRemainingOil": [10, 20, 30],
+        })
+        self.assertEqual(data.latest_row(estimates)["fldRemainingOil"], 10)
+        for value in ("inf", "-inf", "not numeric", None):
+            self.assertIsNone(data.number(pd.Series({"volume": value}), "volume"))
+        monthly = self.tables["monthly"].copy()
+        monthly["prfPrdOilNetMillSm3"] = float("inf")
+        self.assertTrue(data.daily_production(monthly)["Oil [Sm³/d]"].isna().all())
+
 
 class DashboardTests(unittest.TestCase):
+    def test_themes_period_filter_and_single_month(self):
+        tables = datasets()
+        with patch("utils.data.load_dataset", side_effect=lambda name: tables[name]):
+            app = AppTest.from_file(str(ROOT / "app.py")).run()
+            app.sidebar.selectbox[2].select("Dark").run()
+            app.sidebar.radio[0].set_value("Production").run()
+            self.assertEqual(len(app.exception), 0)
+            month = tables["monthly"].index[0]
+            app.select_slider[0].set_value((month, month)).run()
+            self.assertEqual(len(app.exception), 0)
+            self.assertEqual(len(app.dataframe[0].value), 1)
+            app.sidebar.selectbox[2].select("Light").run()
+            self.assertEqual(len(app.exception), 0)
+        tables["monthly"] = tables["monthly"].iloc[:1]
+        with patch("utils.data.load_dataset", side_effect=lambda name: tables[name]):
+            app = AppTest.from_file(str(ROOT / "app.py")).run()
+            app.sidebar.radio[0].set_value("Production").run()
+            self.assertEqual(len(app.exception), 0)
+
+    def test_outage_reuses_timestamped_data_and_limits_retries(self):
+        tables = datasets()
+        tables["overview"].attrs["fetched_at"] = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        with patch("utils.data.load_dataset", side_effect=lambda name: tables[name]) as loader:
+            app = AppTest.from_file(str(ROOT / "app.py")).run()
+            loader.side_effect = data.DataUnavailable("Service unavailable")
+            app.run()
+            self.assertEqual(len(app.exception), 0)
+            self.assertTrue(any("2024-01-01" in warning.value for warning in app.warning))
+            self.assertEqual(app.title[0].value, "OSEBERG")
+            count = loader.call_count
+            app.run()
+            self.assertEqual(loader.call_count, count)
+            app.sidebar.button[0].click().run()
+            self.assertGreater(loader.call_count, count)
+            self.assertEqual(len(app.exception), 0)
+
     def test_sections_switching_missing_data_and_lazy_loading(self):
         tables = datasets()
         with patch("utils.data.load_dataset", side_effect=lambda name: tables[name]) as loader:

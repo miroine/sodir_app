@@ -14,9 +14,9 @@ from utils.data import (
 )
 
 
-def fig_plot_oil(df_selection):
+def fig_plot_oil(df_selection, rates=None):
     data = prepare_monthly(df_selection)
-    rates = daily_production(data)
+    rates = daily_production(data) if rates is None else rates
     fig = go.Figure()
     for label, color in (("Oil", "#0f9d82"), ("NGL", "#e6a23c")):
         fig.add_scatter(
@@ -40,8 +40,8 @@ def fig_plot_oil(df_selection):
     return fig
 
 
-def fig_plot_gas(df_selection):
-    rates = daily_production(df_selection)
+def fig_plot_gas(df_selection, rates=None):
+    rates = daily_production(df_selection) if rates is None else rates
     fig = go.Figure()
     fig.add_scatter(
         x=rates.index, y=rates["Gas [million Sm³/d]"],
@@ -59,8 +59,8 @@ def fig_plot_gas(df_selection):
     return fig
 
 
-def update_tail_production(df_selection):
-    rates = daily_production(df_selection).tail(12)
+def update_tail_production(df_selection, rates=None):
+    rates = (daily_production(df_selection) if rates is None else rates).tail(12).copy()
     rates.index = rates.index.strftime("%m.%Y")
     rates.index.name = "Month"
     return rates
