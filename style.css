@@ -1,17 +1,71 @@
-[data-testid=metric-container] {
-    box-shadow: 0 0 4px #cccccc;
-    padding: 10px;
+.stApp {
+    --explorer-radius: 16px;
 }
 
-.plot-container>div {
-    box-shadow: 0 0 4px #cccccc;
-    padding: 10px;
-    
-   
+.block-container {
+    max-width: 1500px;
+    padding-top: 2.5rem;
+    padding-bottom: 3rem;
 }
 
-div[data-testid="stExpander"] div[role="button"] p
-{
-    font-size: 1.3rem;
-    color:rgb(235, 238, 238);
+h1, h2, h3 {
+    letter-spacing: -0.025em;
+}
+
+h1 {
+    border-left: 5px solid var(--explorer-accent);
+    padding-left: 1rem;
+}
+
+[data-testid="stMetric"] {
+    border: 1px solid color-mix(in srgb, var(--text-color) 18%, transparent);
+    border-top: 3px solid var(--explorer-accent);
+    border-radius: var(--explorer-radius);
+    background: var(--secondary-background-color);
+    padding: 1rem 1.1rem;
+}
+
+[data-testid="stMetricValue"] {
+    font-variant-numeric: tabular-nums;
+}
+
+[data-testid="stPlotlyChart"],
+[data-testid="stExpander"] {
+    border: 1px solid color-mix(in srgb, var(--text-color) 18%, transparent);
+    border-radius: var(--explorer-radius);
+    overflow: hidden;
+}
+
+iframe[title="st.iframe"] {
+    border: 1px solid color-mix(in srgb, var(--text-color) 18%, transparent);
+    border-radius: var(--explorer-radius);
+}
+
+[data-testid="stSidebar"] [role="radiogroup"] label {
+    border-radius: 8px;
+    padding: 0.3rem 0.55rem;
+}
+
+[data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked) {
+    background: color-mix(in srgb, var(--explorer-accent) 16%, transparent);
+}
+
+.stApp button:focus-visible,
+.stApp a:focus-visible {
+    outline: 3px solid var(--explorer-accent);
+    outline-offset: 3px;
+}
+
+[data-testid="stSidebar"] {
+    border-right: 1px solid color-mix(in srgb, var(--text-color) 12%, transparent);
+}
+
+@media (max-width: 768px) {
+    .block-container {
+        padding: 1rem;
+    }
+
+    [data-testid="stMetric"] {
+        padding: 0.75rem;
+    }
 }

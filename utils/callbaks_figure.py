@@ -1,303 +1,197 @@
+from html import escape
+from urllib.parse import urlencode
 
+import pandas as pd
 import plotly.graph_objects as go
-import pandas as pd 
-from npd_wraper import field
-#import dash_html_components as html
-from dash import html
+
+from utils.data import (
+    daily_production,
+    latest_row,
+    load_dataset,
+    number,
+    prepare_monthly,
+    select_field,
+)
 
 
-
-def fig_plot_oil(df_selection):
-    fig={
-        'data':[
-            go.Scatter(
-                x=df_selection.index,
-                y=df_selection["prfPrdProducedWaterInFieldMillSm3"].div(
-                    df_selection["prfPrdProducedWaterInFieldMillSm3"] +
-                    df_selection['prfPrdOilNetMillSm3']),
-                name="Water cut",
-                mode="lines+markers",
-                line={'color':'blue'},
-                yaxis='y2'
-            ),
-
-            go.Scatter(
-                x=df_selection.index,
-                y=df_selection['prfPrdOilNetMillSm3'] / 30.5 * 1E6,
-                name="Free Oil",
-                mode='lines',
-                fillcolor="green",
-                line={'color': 'green'},
-                yaxis='y1',
-                stackgroup='one'
-            ),
-            go.Scatter(
-                x=df_selection.index,
-                y=df_selection['prfPrdNGLNetMillSm3'] / 30.5 * 1E6,
-                name="NGL",
-                mode='lines',
-                fillcolor="orange",
-                line={'color': 'orange'},
-                yaxis='y1',
-                stackgroup='one'
-            )
-
-        ],
-        'layout':go.Layout(
-            title='Liquid historical production',
-            yaxis1={'title': 'Liquid production rate sm3/D'},
-            yaxis2={'side': "right", "overlaying": "y"},
-            hovermode="x unified",
-            legend_orientation="h"
+def fig_plot_oil(df_selection, rates=None):
+    data = prepare_monthly(df_selection)
+    rates = daily_production(data) if rates is None else rates
+    fig = go.Figure()
+    for label, color in (("Oil", "#0f9d82"), ("NGL", "#e6a23c")):
+        fig.add_scatter(
+            x=rates.index, y=rates[f"{label} [Sm³/d]"],
+            name=label, mode="lines", stackgroup="liquids", line_color=color,
         )
-    }
-    fig['layout']['yaxis2'].update(title='', range=[0, 1], tickformat=',.0%', autorange=False)
-    fig['layout']['yaxis1'].update(range=[0,max((df_selection['prfPrdOilNetMillSm3'] / 30.5 * 1E6)+
-                                                df_selection['prfPrdNGLNetMillSm3'] / 30.5 * 1E6)])
+    total = data["prfPrdProducedWaterInFieldMillSm3"] + data["prfPrdOilNetMillSm3"]
+    fig.add_scatter(
+        x=data.index,
+        y=data["prfPrdProducedWaterInFieldMillSm3"].div(total.where(total > 0)),
+        name="Water cut", mode="lines", yaxis="y2", line_color="#5b8def",
+    )
+    fig.update_layout(
+        title="Liquid production", yaxis_title="Sm³/day",
+        yaxis2=dict(
+            title="Water cut", side="right", overlaying="y",
+            range=[0, 1], tickformat=".0%",
+        ),
+        hovermode="x unified", legend_orientation="h",
+    )
     return fig
 
 
-def fig_plot_gas(df_selection):
-    fig ={
-        'data':[
-            go.Scatter(
-            x = df_selection.index,
-            y = df_selection['prfPrdCondensateNetMillSm3'] / 30.5 * 1E6,
-            name = 'Condensate',
-            mode = 'lines',
-            fillcolor = "pink",
-            fill = 'tozeroy',
-            line = {'color': 'pink'}
-            ),
-            go.Scatter(
-                x=df_selection.index,
-                y=df_selection['prfPrdGasNetBillSm3'] / 30.5 * 1E9,
-                name='Free Gas',
-                mode='lines',
-                fillcolor="red",
-                fill='tozeroy',
-                line={'color': 'red'}
-            )
-        ],
-        'layout':go.Layout(
-            title='Gas plot',
-            yaxis={'title':'Gas produce rate Msm3/D'},
-            hovermode="x unified"
-        )
-    }
+def fig_plot_gas(df_selection, rates=None):
+    rates = daily_production(df_selection) if rates is None else rates
+    fig = go.Figure()
+    fig.add_scatter(
+        x=rates.index, y=rates["Gas [million Sm³/d]"],
+        name="Gas", mode="lines", fill="tozeroy", line_color="#5b8def",
+    )
+    fig.add_scatter(
+        x=rates.index, y=rates["Condensate [Sm³/d]"],
+        name="Condensate", mode="lines", yaxis="y2", line_color="#d575ad",
+    )
+    fig.update_layout(
+        title="Gas & condensate production", yaxis_title="Gas · million Sm³/day",
+        yaxis2=dict(title="Condensate · Sm³/day", side="right", overlaying="y"),
+        hovermode="x unified", legend_orientation="h",
+    )
     return fig
 
-def update_tail_production(df_selection):
-    #df_selection.set_index('date', inplace=True)
-    pd.options.display.float_format = '{:,.3f}'.format
-    cols = ["prfPrdOilNetMillSm3", "prfPrdGasNetBillSm3",
-            "prfPrdNGLNetMillSm3", "prfPrdCondensateNetMillSm3", "prfPrdOeNetMillSm3",
-            "prfPrdProducedWaterInFieldMillSm3"]
-    temp = df_selection[cols].reset_index().tail(12)
-    
-    temp.columns = ["Date", "Oil [Sm3/D]", "Gas [Msm3/D]", "NGL [Sm3/D]", "Condensate [Sm3/D]", "OE [Sm3/D]",
-                    "Water [Sm3/D]"]
-    # compute daily average
-    temp["Oil [Sm3/D]"] = temp["Oil [Sm3/D]"] / 30.5 * 1E6
-    temp["Gas [Msm3/D]"] = temp["Gas [Msm3/D]"] / 30.5 * 1E9
-    temp["NGL [Sm3/D]"] = temp["NGL [Sm3/D]"] / 30.5 * 1E6
-    temp["Condensate [Sm3/D]"] = temp["Condensate [Sm3/D]"] / 30.5 * 1E6
-    temp["OE [Sm3/D]"] = temp["OE [Sm3/D]"] / 30.5 * 1E6
-    temp["Water [Sm3/D]"] = temp["Water [Sm3/D]"] / 30.5 * 1E6
-    temp['Date'] = temp['Date'].dt.strftime('%m.%Y')
-    temp.set_index("Date", inplace=True)
 
-    mapper = {"Oil [Sm3/D]": '{0:.2f}',
-              "Gas [Msm3/D]": '{0:.2e}',
-              "NGL [Sm3/D]": '{0:.2f}',
-              "Condensate [Sm3/D]": '{0:.2f}',
-              "OE [Sm3/D]": '{0:.2f}',
-              "Water [Sm3/D]": '{0:.2f}'}
-
-    temp = temp.apply(lambda x: x.apply(mapper[x.name].format))
-
-    return temp
+def update_tail_production(df_selection, rates=None):
+    rates = (daily_production(df_selection) if rates is None else rates).tail(12).copy()
+    rates.index = rates.index.strftime("%m.%Y")
+    rates.index.name = "Month"
+    return rates
 
 
-def get_field_info(selected_field):
-    df_info=field().get_field_overview()
-    df_info=df_info[df_info.fldName == selected_field]
-    df_inplace=field().get_field_inplace_volume()
-    df_inplace=df_inplace[df_inplace.fldName ==selected_field]
-    df_production=field().get_field_production_yearly()
-    df_production=df_production[df_production['prfInformationCarrier']==selected_field]
-    df_overview=field().get_field_overview()
-    df_overview = df_overview[df_overview.fldName == selected_field]
-
-    df_production =df_production[['prfPrdOilNetMillSm3','prfPrdGasNetBillSm3']]
-
-    for col in df_production.columns:
-        df_production[col]=df_production[col].astype('float')
-
-    df_production=df_production.cumsum(axis=0)
-    #print(df_inplace)
-    if float(df_inplace.fldInplaceOil.values[0])>0:
-        oil_rf= df_production['prfPrdOilNetMillSm3'].max()/float(df_inplace.fldInplaceOil.values[0])
-    else:
-        oil_rf =0
-    if float(df_inplace.fldInplaceFreeGas.values[0])>0:
-        gas_rf= df_production.prfPrdGasNetBillSm3.max()/float(df_inplace.fldInplaceFreeGas.values[0])
-    else:
-        gas_rf=0
-    
-    s = '''
-    * __Status__:  %s  
-    * __Area__:    %s  
-    * __Discovery Well__: %s
-    * __Discovery_date__: %s 
-    * __Operator__: %s 
-    * __Inplace Volume__: Oil : %.1f Msm3 , Gas : %.1f Gsm3
-
-    * __Recovery Factor__: Oil : %.2f , Gas: %.2f
-    ''' % (str(df_info.fldCurrentActivitySatus.values[0]),
-           str(df_info.fldMainArea.values[0]),
-           str(df_overview.wlbName.values[0]),
-           str(df_info.wlbCompletionDate.values[0]),
-           str(df_info.cmpLongName.values[0]),
-           float(df_inplace.fldInplaceOil.values[0]),
-           float(df_inplace.fldInplaceFreeGas.values[0]),
-           oil_rf,gas_rf)
-    return s
+def get_field_info(selected_field, overview=None, inplace=None, production=None):
+    overview = load_dataset("overview") if overview is None else overview
+    inplace = load_dataset("inplace") if inplace is None else inplace
+    production = load_dataset("monthly") if production is None else production
+    info = latest_row(select_field(overview, selected_field))
+    volumes = latest_row(select_field(inplace, selected_field))
+    produced = select_field(production, selected_field, "prfInformationCarrier")
+    lines = []
+    for label, column in (
+        ("Status", "fldCurrentActivitySatus"), ("Area", "fldMainArea"),
+        ("Discovery well", "wlbName"), ("Discovery date", "wlbCompletionDate"),
+        ("Operator", "cmpLongName"),
+    ):
+        value = info.get(column)
+        lines.append(f"**{label}:** {value if pd.notna(value) else 'Not available'}")
+    oil = number(volumes, "fldInplaceOil")
+    gas_parts = [number(volumes, col) for col in ("fldInplaceFreeGas", "fldInplaceAssGas")]
+    gas = sum(gas_parts) if all(value is not None for value in gas_parts) else None
+    for label, volume, column, unit in (
+        ("Oil", oil, "prfPrdOilNetMillSm3", "million Sm³"),
+        ("Gas", gas, "prfPrdGasNetBillSm3", "billion Sm³"),
+    ):
+        if volume is not None:
+            lines.append(f"**{label} in place:** {volume:,.1f} {unit}")
+        cumulative = pd.to_numeric(produced.get(column, pd.Series(dtype=float)), errors="coerce").sum(min_count=1)
+        if volume is not None and volume > 0 and pd.notna(cumulative):
+            lines.append(f"**{label} recovery factor:** {cumulative / volume:.1%}")
+    return "  \n".join(lines)
 
 
-def field_map(selected_field):
-    df_info = field().get_field_overview()
-    df_info = df_info[df_info.fldName == selected_field]
-    iframe_url="https://factmaps.sodir.no/factmaplink/?entity=field&npdid=%i&shellMode=handheld"%int(df_info.fldNpdidField.values[0])
-    # HTML code for embedding the iframe
-    iframe_html = f'<iframe width="360" height="315" src="{iframe_url}" frameborder="0" allowfullscreen></iframe>'
-    return iframe_html
+def field_map_url(selected_field, overview=None):
+    overview = load_dataset("overview") if overview is None else overview
+    info = latest_row(select_field(overview, selected_field))
+    field_id = number(info, "fldNpdidField")
+    if field_id is None or field_id <= 0 or not field_id.is_integer():
+        return None
+    query = urlencode(dict(entity="field", npdid=int(field_id), shellMode="handheld"))
+    return f"https://factmaps.sodir.no/factmaplink/?{query}"
 
-def callback_plot_reserve(selected_field):
-    #get total recoverable and reserves
-    df_info= field().get_field_reserves()
-    df_info=df_info[df_info.fldName ==selected_field]
-    recoverable = float(df_info["fldRecoverableOil"])
-    remaining = float(df_info["fldRemainingOil"])
-    #get production volume
-    df_prod=field().get_field_production_yearly()
-    df_prod=df_prod[df_prod.prfInformationCarrier == selected_field]
-    df_prod['prfPrdOilNetMillSm3']=df_prod['prfPrdOilNetMillSm3'].astype('float32')
-    produced= float(df_prod.prfPrdOilNetMillSm3.sum())
-    #get in place volume
-    df_info = field().get_field_inplace_volume()
-    df_info =df_info[df_info.fldName == selected_field]
-    inplace= float(df_info["fldInplaceOil"])
 
-    fig=go.Figure(go.Indicator(
-        mode='gauge+number',
-        value=produced+remaining,
-        domain={'x':[0,1], 'y':[0,1]},
-        title= {'text':'Oil produced volume Msm3'},
-        delta={'reference':produced, 'increasing':{'color':'#618152'}},
-        gauge={
-            'axis': {'range': [None, inplace], 'tickwidth': 1, 'tickcolor': "darkblue"},
-            'bar': {'color': "green"},
-            'bgcolor': "white",
-            'borderwidth': 2,
-            'bordercolor': "gray",
-            'steps': [
-                {'range': [0, produced], 'color': '#0F9768'},
-                {'range': [produced, produced + remaining], 'color': '#52CB19'}],
-            'threshold': {
-                'line': {'color': "red", 'width': 4},
-                'thickness': 0.75,
-                'value': recoverable}}))
+def field_map(selected_field, overview=None):
+    """Compatibility HTML helper; the dashboard uses Streamlit's iframe component."""
+    url = field_map_url(selected_field, overview)
+    if url is None:
+        return ""
+    return (
+        f'<iframe title="SODIR field map" width="100%" height="560" '
+        f'src="{escape(url, quote=True)}" style="border:0" allowfullscreen></iframe>'
+    )
+
+
+def reserve_figure(selected_field, product, reserves=None, inplace=None, production=None):
+    reserves = load_dataset("reserves") if reserves is None else reserves
+    inplace = load_dataset("inplace") if inplace is None else inplace
+    production = load_dataset("monthly") if production is None else production
+    reserve = latest_row(select_field(reserves, selected_field))
+    volume = latest_row(select_field(inplace, selected_field))
+    remaining = number(reserve, f"fldRemaining{product}")
+    recoverable = number(reserve, f"fldRecoverable{product}")
+    if remaining is None or recoverable is None:
+        return None
+    columns = ["fldInplaceOil"] if product == "Oil" else ["fldInplaceFreeGas", "fldInplaceAssGas"]
+    parts = [number(volume, col) for col in columns]
+    if any(value is None for value in parts):
+        return None
+    in_place = sum(parts)
+    produced_data = select_field(production, selected_field, "prfInformationCarrier")
+    column = "prfPrdOilNetMillSm3" if product == "Oil" else "prfPrdGasNetBillSm3"
+    produced = pd.to_numeric(
+        produced_data.get(column, pd.Series(dtype=float)), errors="coerce"
+    ).sum(min_count=1)
+    if pd.isna(produced):
+        return None
+    unit = "million Sm³" if product == "Oil" else "billion Sm³"
+    upper = max(in_place, produced + remaining, recoverable)
+    if upper <= 0:
+        upper = 1
+    fig = go.Figure(go.Indicator(
+        mode="gauge+number", value=produced,
+        title=dict(text=f"{product} produced · {unit}"),
+        gauge=dict(
+            axis=dict(range=[0, upper]), bar=dict(color="#0f9d82"),
+            steps=[
+                dict(range=[0, produced], color="#0f9d82"),
+                dict(range=[produced, produced + remaining], color="#8ad8c7"),
+            ],
+            threshold=dict(line=dict(color="#e6a23c", width=3), value=recoverable),
+        ),
+    ))
+    fig.update_layout(height=300, margin=dict(l=35, r=35, t=65, b=20))
     return fig
 
-def callback_plot_gas(selected_field):
-    #get totalrecoverable and reserves
-    df_info = field().get_field_reserves()
-    df_info = df_info[df_info.fldName == selected_field]
-    recoverable=float(df_info["fldRecoverableGas"])
-    remaining= float(df_info["fldRemainingGas"])
-    #get produced volume
-    df_prod=field().get_field_production_yearly()
-    df_prod = df_prod[df_prod.prfInformationCarrier== selected_field]
-    df_prod['prfPrdGasNetBillSm3']=df_prod['prfPrdGasNetBillSm3'].astype('float32')
-    produced= float(df_prod.prfPrdGasNetBillSm3.sum())
-    # get inplace volume
-    df_info = field().get_field_inplace_volume()
-    df_info = df_info[df_info.fldName == selected_field]
-    inplace=float(df_info["fldInplaceAssGas"])+float(df_info["fldInplaceFreeGas"])
 
-    fig=go.Figure(go.Indicator(
-        mode = "gauge+number",
-        value = produced+remaining,
-        domain = {'x': [0, 1], 'y': [0, 1]},
-        title = {'text': "Gas produced volumes Gsm3"},
-        delta = {'reference': produced, 'increasing': {'color': "#D0297F"}},
-        gauge = {
-            'axis': {'range': [None, inplace], 'tickwidth': 1, 'tickcolor': "darkblue"},
-            'bar': {'color': "red"},
-            'bgcolor': "white",
-            'borderwidth': 2,
-            'bordercolor': "gray",
-            'steps': [
-            {'range': [0, produced], 'color': '#F15014'},
-            {'range': [produced, produced+remaining], 'color': '#9A224A'}],
-            'threshold': {
-                'line': {'color': "black", 'width': 4},
-                'thickness': 0.75,
-                'value': recoverable}}))
+def callback_plot_reserve(selected_field, **datasets):
+    return reserve_figure(selected_field, "Oil", **datasets)
 
-    return fig
+
+def callback_plot_gas(selected_field, **datasets):
+    return reserve_figure(selected_field, "Gas", **datasets)
+
 
 def callback_reserves(selected_field):
-    #get totalrecoverable and reserves
-    df_info = field().get_field_reserves()
-    df_info = df_info[df_info.fldName == selected_field]
-    remaining_oil= float(df_info["fldRemainingOil"])
-    remaining_gas= float(df_info["fldRemainingGas"])
-    remaining_ngl= float(df_info["fldRemainingNGL"])
-    remaining_condensate= float(df_info["fldRemainingCondensate"])
+    row = latest_row(select_field(load_dataset("reserves"), selected_field))
+    # Gas billion Sm³ converts to million Sm³ oil equivalent at a factor of 1.
+    values = [number(row, f"fldRemaining{product}") for product in ("Oil", "Gas", "NGL", "Condensate")]
+    if any(value is None for value in values):
+        return None
+    values[2] *= 1.9
+    return go.Figure(go.Pie(
+        labels=["Oil", "Gas", "NGL", "Condensate"], values=values, hole=0.4,
+        title=dict(text="Remaining reserves · million Sm³ oil equivalent"),
+    ))
 
 
-    fig={'data':[go.Pie(
-        labels=["Oil","Gas","NGL","Condensate"],
-        values = [remaining_oil,remaining_gas,remaining_ngl,remaining_condensate],
-        title={'text': "Field Reserves"},
-        marker={
-                'colors':[
-                    'rgb(36, 157, 32)',
-                    'rgb(239, 34, 53)',
-                    'rgb(239, 183, 34)',
-                    'rgb(239, 34, 192)'
-                ]
-        },
-        hole=0.4,
-        hoverinfo="label+value"
-        )],
-        'layout': go.Layout(
-            title='Reserves MOE'
-        )}
-
-    return fig
-
-def callback_investments(selected_field):
-    #get totalrecoverable and reserves
-    df_info = field().get_field_investments()
-    df_info = df_info[df_info.prfInformationCarrier == selected_field]
-    df_info['prfInvestmentsMillNOK']=df_info['prfInvestmentsMillNOK'].astype('float')
-    #print(df_info.head())
-
-
-    fig={'data': [go.Bar(
-        name="Yearly Investment MNOK",
-        x = df_info.prfYear,
-        y=df_info['prfInvestmentsMillNOK'],
-        marker_line_color='rgb(8,48,107)',
-        marker_line_width=1.5
-        )],
-        'layout': go.Layout(
-            hovermode='closest',
-            yaxis={'title':"Investments MNOK"},
-            title="Investments"
-        )}
-
+def callback_investments(selected_field, investments=None):
+    investments = load_dataset("investments") if investments is None else investments
+    data = select_field(investments, selected_field, "prfInformationCarrier")
+    if data.empty or not {"prfYear", "prfInvestmentsMillNOK"}.issubset(data.columns):
+        return None
+    data["prfYear"] = pd.to_numeric(data["prfYear"], errors="coerce")
+    data["prfInvestmentsMillNOK"] = pd.to_numeric(data["prfInvestmentsMillNOK"], errors="coerce")
+    data = data.dropna(subset=["prfYear", "prfInvestmentsMillNOK"]).sort_values("prfYear")
+    if data.empty:
+        return None
+    fig = go.Figure(go.Bar(
+        x=data["prfYear"], y=data["prfInvestmentsMillNOK"], marker_color="#5b8def",
+    ))
+    fig.update_layout(title="Annual investments", yaxis_title="Million NOK", xaxis_title="Year")
     return fig

@@ -1,9 +1,3 @@
-plotly
-pandas
-numpy
-streamlit
-scipy
-seaborn
-statistics
-dash
-git+https://github.com/miroine/npd_data.git
+plotly>=5.18
+pandas>=2.0
+streamlit>=1.65
