@@ -126,6 +126,8 @@ if appearance != "System":
         ".stApp [data-baseweb='select'] > div, .stApp button,"
         ".stApp input, .stApp [data-baseweb='input'] {"
         "background-color: var(--secondary-background-color); color: var(--text-color);}"
+        ".stApp [data-testid='stAlert'] {"
+        "background-color: var(--secondary-background-color); color: var(--text-color);}"
         "</style>",
         unsafe_allow_html=True,
     )

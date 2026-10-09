@@ -94,6 +94,9 @@ class CalculationTests(unittest.TestCase):
             "fldRemainingOil": [10, 20],
         })
         self.assertEqual(data.latest_row(estimates)["fldRemainingOil"], 10)
+        estimates["fldDateOffResEstDisplay"] = None
+        estimates["fldDateOffResEst"] = ["2024-01-12", "2023-12-31"]
+        self.assertEqual(data.latest_row(estimates)["fldRemainingOil"], 10)
         overview = self.tables["overview"]
         self.assertIn("npdid=43625", field_map_url("OSEBERG", overview))
         self.assertIn("npdid=999", field_map_url("EMPTY", overview))

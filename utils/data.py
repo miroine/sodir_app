@@ -99,6 +99,8 @@ def latest_row(data):
             dates = dates.fillna(pd.to_datetime(
                 text.where(~iso), errors="coerce", dayfirst=True, format="mixed",
             ))
+            if not dates.notna().any():
+                continue
             data = data.assign(_estimate_date=dates).sort_values(
                 "_estimate_date", na_position="first"
             )
