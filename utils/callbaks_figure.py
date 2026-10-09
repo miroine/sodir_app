@@ -140,7 +140,9 @@ def reserve_figure(selected_field, product, reserves=None, inplace=None, product
     if pd.isna(produced):
         return None
     unit = "million Sm³" if product == "Oil" else "billion Sm³"
-    upper = max(in_place, produced + remaining, recoverable, 1)
+    upper = max(in_place, produced + remaining, recoverable)
+    if upper <= 0:
+        upper = 1
     fig = go.Figure(go.Indicator(
         mode="gauge+number", value=produced,
         title=dict(text=f"{product} produced · {unit}"),
