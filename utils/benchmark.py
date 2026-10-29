@@ -24,7 +24,8 @@ NEVER_DRILLED = {"WILL NEVER BE DRILLED", "PREDRILLED"}
 COLOR_OPTIONS = {
     "HC type": "hc_type", "Drainage strategy": "drainage_strategy", "Area": "area",
     "Main group": "main_group", "Main formation": "main_formation", "Lithology": "main_lithology",
-    "Age": "main_age", "Status": "status", "Development concept": "main_concept", "HPHT": "hpht_label",
+    "Age": "main_age", "Status": "status", "Development concept": "main_concept",
+    "Development type": "development_type", "HPHT": "hpht_label",
 }
 FACT_LIST_COLUMNS = ("formations", "groups", "ages", "lithology", "mechanisms", "concept")
 PRODUCTION_SUMMARY_COLUMNS = (
@@ -189,7 +190,9 @@ def build_master(overview, reserves, inplace, yearly, wells, facts, pt=None, cur
         if column not in master:
             master[column] = np.nan
     master["main_concept"] = master["concept"].apply(lambda v: v[0] if v else None)
-    master["hpht_label"] = np.where(master["hpht"].fillna(False).astype(bool), "HPHT", "Normal")
+    master["hpht_label"] = master.get("hpht_status", pd.Series(index=master.index, dtype="string")).fillna("Not stated")
+    if "development_type" not in master:
+        master["development_type"] = "Not stated"
 
     master["rf_oil"] = master["recoverable_oil"].div(master["inplace_oil"].where(master["inplace_oil"] > 0))
     master["rf_gas"] = master["recoverable_gas"].div(master["inplace_gas"].where(master["inplace_gas"] > 0))
@@ -251,8 +254,8 @@ def apply_filters(master, hc_types=None, areas=None, drives=None, formations=Non
         mask &= master["start_year"].between(low, high)
     if min_years:
         mask &= master["years_on_production"].fillna(0) >= min_years
-    if hpht is not None and "hpht" in master:
-        mask &= master["hpht"].fillna(False).astype(bool) == hpht
+    if hpht is not None and "hpht_label" in master:
+        mask &= master["hpht_label"].eq("HPHT (stated)" if hpht else "Non-HPHT (stated)")
     return mask
 
 

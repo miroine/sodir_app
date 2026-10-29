@@ -181,8 +181,7 @@ iframe {
 [data-testid="stSidebar"] p,
 [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p,
 [data-testid="stSidebar"] [data-testid="stWidgetLabel"] p,
-[data-testid="stSidebar"] [role="radiogroup"] label p,
-[data-testid="stSidebar"] [data-baseweb="select"] div {
+[data-testid="stSidebar"] [role="radiogroup"] label p {
     color: #F2F5F8 !important;
 }
 
@@ -211,6 +210,28 @@ iframe {
     border-color: rgba(255, 255, 255, 0.18);
     color: #FFFFFF;
 }
+
+[data-testid="stSidebar"] [data-baseweb="select"] > div,
+[data-testid="stSidebar"] [data-baseweb="select"] input {
+    background: #19374A !important;
+}
+
+[data-testid="stSidebar"] [data-baseweb="select"] div,
+[data-testid="stSidebar"] [data-baseweb="select"] input {
+    color: #F2F5F8 !important;
+    -webkit-text-fill-color: #F2F5F8 !important;
+}
+
+.description-card {
+    border-top: 3px solid var(--c-accent);
+    border-bottom: 1px solid var(--c-rule);
+    background: var(--c-surface);
+    padding: 1rem 1.15rem;
+    margin-bottom: 1rem;
+}
+
+.description-card h3 { margin: 0 0 0.7rem; }
+.description-card p { line-height: 1.75; font-size: 0.95rem; margin-bottom: 0.5rem; }
 
 [data-testid="stSidebar"] [data-baseweb="select"] svg {
     fill: #FFFFFF;

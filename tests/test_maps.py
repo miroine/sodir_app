@@ -88,6 +88,14 @@ class MapTests(unittest.TestCase):
         self.assertIn("\\u003c/script\\u003e", html)
         self.assertIn("textContent = data.field", html)
         self.assertIn("leaflet@1.9.4", html)
+        self.assertIn("km²", html)
+        self.assertNotIn("Â", html)
+        for expected in (
+            '"Dark":', '"Gray":', '"Satellite":', "L.Control.Draw",
+            "L.Draw.Event.EDITED", "L.Draw.Event.DELETED", "radius_m",
+            "application/geo+json", "geodesicArea", "map.distance",
+        ):
+            self.assertIn(expected, html)
 
     def test_dashboard_map_switches_geometry_without_loading_production(self):
         tables = datasets()

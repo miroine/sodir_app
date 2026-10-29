@@ -8,7 +8,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from utils import benchmark as bm
-from utils import figures, theme
+from utils import economics as econ, figures, investments as inv, theme
 from utils.callbaks_figure import (
     callback_investments,
     callback_plot_gas,
@@ -22,10 +22,11 @@ from utils.data import DataUnavailable, daily_production, latest_row, load_datas
 from utils.extract import SECTIONS, facts_table, sections_for_field
 from utils.maps import load_field_geometry, load_map_layers, map_document
 from utils.pt import PT_COLUMNS, load_curated, normalise_pt, pt_for_fields
+from utils.reservoir import field_parameters
 
 ROOT = Path(__file__).resolve().parent
 CURRENT_YEAR = datetime.now(timezone.utc).year
-SECTION_NAMES = ["Overview", "Production", "Wells & reservoir", "Reserves", "Investments", "Map", "Benchmark", "Data & QA"]
+SECTION_NAMES = ["Overview", "Production", "Wells & reservoir", "Reserves", "Investments", "Economics", "Map", "Benchmark", "Data & QA"]
 
 st.set_page_config(page_title="NCS Field Intelligence · SODIR", page_icon="◆", layout="wide")
 
@@ -155,11 +156,14 @@ def field_fact_rows(field, master, facts, pt):
     identity = [
         ("Status", f"{text(row.get('status'))} · {text(row.get('hc_type'))}"),
         ("Operator", text(row.get("operator"))),
-        ("Area", text(row.get("area")) + (f" · {escape(str(fact['sub_area']))}" if isinstance(fact.get("sub_area"), str) else "")),
+        ("Production region / sub-area", text(row.get("area")) + (f" · {escape(str(fact['sub_area']))}" if isinstance(fact.get("sub_area"), str) else "")),
         ("Timeline", f"Discovered {fmt(fact.get('discovery_year'), '{:.0f}')} · PDO {fmt(fact.get('pdo_year'), '{:.0f}')} · "
                      f"First production {fmt(row.get('start_year'), '{:.0f}')}"
                      + (f" <small>(text: {fact['production_start_text']:.0f})</small>" if pd.notna(fact.get("production_start_text")) else "")),
-        ("Development", flags(fact.get("concept") or [])),
+        ("Development type", text(fact.get("development_type"))),
+        ("Development details", flags(fact.get("concept") or [])),
+        ("Gas export route", text(fact.get("gas_export_route"))),
+        ("Oil / condensate export route", text(fact.get("liquids_export_route"))),
     ]
     primary = fact.get("drainage_strategy") or "Not stated"
     mechanisms = [m for m in (fact.get("mechanisms") or []) if m != primary]
@@ -168,7 +172,12 @@ def field_fact_rows(field, master, facts, pt):
         ("Producing formations", flags(fact.get("formations") or [])),
         ("Groups · age", f"{flags(fact.get('groups') or [])}<br>{escape(', '.join(fact.get('ages') or []) or '—')}"),
         ("Lithology · quality", f"{escape(', '.join(fact.get('lithology') or []) or '—')} · {text(fact.get('reservoir_quality'))}"),
-        ("Reservoir depth", depth + (" · <span class='flag primary'>HPHT</span>" if fact.get("hpht") else "")),
+        ("Reservoir depth", depth),
+        ("HPHT classification", text(fact.get("hpht_status"))),
+        ("Reservoir thickness (text)", f"{fmt(fact.get('reservoir_thickness_min_m'))}–{fmt(fact.get('reservoir_thickness_max_m'))} m"
+         if pd.notna(fact.get("reservoir_thickness_min_m")) else "Not stated — see sourced parameters below"),
+        ("Reservoir footprint (text)", f"{fmt(fact.get('reservoir_footprint_min_km2'))}–{fmt(fact.get('reservoir_footprint_max_km2'))} km²"
+         if pd.notna(fact.get("reservoir_footprint_min_km2")) else "Not stated — not inferred from the map boundary"),
         ("Water depth", water),
         ("Pressure · temperature", pt_text),
     ]
@@ -213,6 +222,242 @@ def peer_insight(master_subset, env, basis, product_label):
     if len(ratio) >= 3:
         parts.append(f"median {ratio.median():.2f} injectors per producer")
     return "; ".join(parts) + "."
+
+
+def economics_workspace(field, tables):
+    st.info("Illustrative pre-tax screening only. Historical volumes are repriced at your constant scenario prices; these are not actual historical profits or official cessation dates.")
+    production = bm.yearly_long(tables["yearly"])
+    production = production.loc[production["fldName"].eq(field) & production["year"].lt(CURRENT_YEAR)]
+    try:
+        investments = inv.prepare_investments(optional_dataset("investments"), CURRENT_YEAR)
+    except ValueError as exc:
+        st.error(str(exc))
+        return
+    investments = investments.loc[investments["fldName"].eq(field)]
+    if production.empty or investments.empty:
+        st.info("Annual production and investment histories are both required.")
+        return
+    choices = sorted(set(production["year"]) & set(investments["year"]))
+    nonzero = investments.loc[investments["nominal_mnok"].ne(0), "year"]
+    if not choices:
+        st.info("No common production and investment year is available.")
+        return
+    default = max((y for y in choices if nonzero.empty or y <= nonzero.max()), default=max(choices))
+    cutoff = st.selectbox("Historical cutoff year", choices, index=choices.index(default), key=f"econ_cutoff_{field}")
+    st.caption("Default cutoff avoids trailing all-zero investment years, which can be placeholders. Source negatives and zeros are retained; verify costs are complete. Production after your cutoff is not used in this scenario.")
+    with st.container(border=True):
+        st.subheader("Editable scenario assumptions")
+        a, b, c, d = st.columns(4)
+        oil = a.number_input("Oil price · USD/bbl", min_value=0.0, value=70.0, key="econ_oil")
+        gas = b.number_input("Gas price · USD/Sm³", min_value=0.0, value=0.30, step=0.05, key="econ_gas")
+        cond = c.number_input("Condensate price · USD/bbl", min_value=0.0, value=70.0, key="econ_cond")
+        ngl = d.number_input("NGL price · USD/bbl liquid", min_value=0.0, value=40.0, key="econ_ngl")
+        a, b, c, d = st.columns(4)
+        fx = a.number_input("FX · NOK per USD", min_value=0.001, value=10.0, key="econ_fx")
+        variable = b.number_input("Variable OPEX · USD/boe", min_value=0.0, value=12.0, key="econ_variable")
+        fixed = c.number_input("Fixed OPEX · million NOK/year", min_value=0.0, value=1000.0, key="econ_fixed")
+        discount = d.number_input("Annual discount rate · %", min_value=0.0, max_value=100.0, value=8.0, key="econ_discount")
+    st.caption("Defaults are illustrative, not literature-derived. Fixed OPEX applies only in years with positive production; pre-production operating costs are omitted. Nominal historical CAPEX and constant scenario revenues/OPEX are mixed: no inflation adjustment here. No tax, financing, tariffs, abandonment cost or equity allocation.")
+    mode = st.radio("Prognosis basis", ["No forecast", "Illustrative decline scenario", "Import my prognosis"], horizontal=True, key="econ_mode")
+    forecast_description = "No forecast"
+    forecast = pd.DataFrame()
+    if mode == "Illustrative decline scenario":
+        a, b, c = st.columns(3)
+        decline = a.number_input("Effective annual decline · %", min_value=0.0, max_value=99.0, value=15.0, key="econ_decline")
+        horizon = b.number_input("Forecast horizon · years", min_value=1, max_value=100, value=30, key="econ_horizon")
+        capex = c.number_input("Future annual investment · million NOK", min_value=0.0, value=0.0, key="econ_future_capex")
+        forecast_description = f"Effective annual decline {decline:g}% for {horizon} years; future annual investment {capex:g} million NOK"
+        st.warning("This is an exponential extrapolation from the cutoff-year product mix—not a SODIR/operator prognosis. It ignores new wells, compression, reserves limits and facilities constraints.")
+        try:
+            forecast = econ.decline_forecast(production.loc[production["year"].eq(cutoff)].iloc[0].to_dict(), decline / 100, int(horizon))
+        except ValueError as exc:
+            st.error(str(exc))
+            return
+        forecast["investment_mnok"] = capex
+    elif mode == "Import my prognosis":
+        st.caption("CSV/XLSX: consecutive year rows starting immediately after the cutoff; oil/condensate/ngl in million Sm³, gas in billion Sm³. Omitted product columns mean zero; blank cells are invalid. No boe-only imports for product pricing.")
+        upload = st.file_uploader("Production prognosis", type=["csv", "xlsx"], key=f"econ_prognosis_{field}")
+        template = f"year,oil,gas,condensate,ngl,investment_mnok\n{cutoff + 1},0,1,0.1,0,0\n{cutoff + 2},0,0.8,0.08,0,0\n"
+        st.download_button("Download prognosis template", template.encode("utf-8"), file_name="production_prognosis.csv", mime="text/csv")
+        if upload is None:
+            st.info("Upload a prognosis to calculate forecast cash flows and the scenario economic limit.")
+            return
+        forecast_description = f"User prognosis: {upload.name}; inspect annual investment and volume columns"
+        try:
+            forecast = econ.parse_prognosis(upload.getvalue(), upload.name)
+        except (ValueError, ImportError, UnicodeError) as exc:
+            st.error(f"Could not read the prognosis: {exc}")
+            return
+        if "investment_mnok" not in forecast:
+            future_capex = st.number_input("Future annual investment · million NOK", min_value=0.0, value=0.0, key="econ_import_capex")
+            forecast["investment_mnok"] = future_capex
+    confirmed = st.checkbox("I understand these are scenario assumptions, not actual profits, and have reviewed the investment coverage and units", key=f"econ_confirm_{field}")
+    if not confirmed:
+        return
+    assumptions = econ.Assumptions(oil, gas, cond, ngl, fx, variable, fixed, discount / 100)
+    try:
+        history = econ.historical_profile(production, investments, int(cutoff))
+        results, summary = econ.evaluate(history, forecast, assumptions)
+    except ValueError as exc:
+        st.error(f"Cannot calculate this scenario: {exc}")
+        return
+    st.session_state.setdefault("economic_scenarios", {})[field] = {
+        **summary, "cutoff": int(cutoff), "mode": mode, "forecast_description": forecast_description,
+        "assumptions": vars(assumptions),
+    }
+    a, b, c = st.columns(3)
+    a.metric("Scenario capital payback year", str(summary["payback_year"]) if summary["payback_year"] else "Not reached")
+    b.metric("Discounted payback year", str(summary["discounted_payback_year"]) if summary["discounted_payback_year"] else "Not reached")
+    c.metric("NPV at first model year · million NOK", fmt(summary["npv_mnok"]))
+    if forecast.empty:
+        st.info("No prognosis supplied: cessation cannot be estimated from historical production alone.")
+    elif summary["economic_limit_year"] is None:
+        st.info(f"Economic limit not reached through {summary['last_year']}. Cessation is undetermined beyond this horizon.")
+    else:
+        st.warning(
+            f"Scenario first uneconomic operating year: {summary['economic_limit_year']}; "
+            f"last operating year before that limit: {summary['cessation_year']}. "
+            "This screening assumes no restart and excludes future capital from the operating-limit test. "
+            "The full untruncated prognosis is shown below, not an optimized shutdown schedule."
+        )
+    recovered = summary["payback_year"]
+    if recovered:
+        st.caption(f"Payback is the first non-negative cumulative cash-flow year after a negative balance: {recovered - summary['first_year']} calendar years from {summary['first_year']}. Later investment can reverse recovery; annual timing is not interpolated.")
+    figure = go.Figure()
+    for column, label, color in (
+        ("revenue_mnok", "Revenue", theme.SKY), ("opex_mnok", "OPEX", theme.LIGHT_GREY),
+        ("investment_mnok", "Investment", theme.STEEL), ("free_cash_flow_mnok", "Pre-tax free cash flow", theme.ELECTRIC),
+    ):
+        figure.add_bar(x=results["year"], y=results[column], name=label, marker_color=color)
+    figure.update_layout(barmode="group", xaxis=dict(title="Year", tickformat="d"), yaxis_title="Million NOK")
+    show_chart(theme.style(figure, "Annual scenario profitability / cash flow", "Repriced history and forecast scenario; not accounting profit",
+                           "SODIR volumes/investment; user prices, FX and operating-cost assumptions", dark=dark, height=480))
+    figure = go.Figure()
+    for column, label in (("cumulative_cash_flow_mnok", "Cumulative cash flow"),
+                          ("cumulative_discounted_mnok", "Cumulative discounted cash flow")):
+        figure.add_scatter(x=results["year"], y=results[column], name=label, mode="lines")
+    figure.add_hline(y=0, line_dash="dot")
+    figure.update_layout(xaxis=dict(title="Year", tickformat="d"), yaxis_title="Million NOK")
+    show_chart(theme.style(figure, "Scenario capital recovery", "Annual end-of-year discounting from the first modeled year",
+                           "SODIR volumes/investment; user scenario assumptions, not reported profits", dark=dark, height=420))
+    st.caption(f"Historical cutoff: {cutoff}; forecast basis: {mode}. Liquid volumes convert at {inv.BOE_PER_SM3} bbl/Sm³; gas revenue uses 1 GSm³ = 1,000 million Sm³; NGL contributes 1.9 Sm³ o.e./Sm³ to the OPEX denominator.")
+    st.dataframe(results.round(3), width="stretch", hide_index=True)
+    export = results.assign(field=field, forecast_basis=mode, forecast_description=forecast_description,
+                            historical_cutoff_year=cutoff, **vars(assumptions))
+    st.download_button("Download economics scenario CSV", export.to_csv(index=False).encode("utf-8"),
+                       file_name=f"{field}_economics_scenario.csv", mime="text/csv")
+
+
+def investment_workspace(peers, yearly, wells, color_key, color_column, highlight):
+    st.markdown(
+        "**Field investment intensity, not operating cost or individual well drilling cost.** "
+        "SODIR reports annual investment in nominal million NOK. "
+        "All measures use oil equivalent (boe), not oil-only barrels."
+    )
+    raw = optional_dataset("investments")
+    try:
+        prepared = inv.prepare_investments(raw, CURRENT_YEAR)
+    except ValueError as exc:
+        st.error(str(exc))
+        return
+    prepared = prepared.loc[prepared["fldName"].isin(peers.index)]
+    if prepared.empty:
+        st.info("No investment records are available for the filtered peer set.")
+        return
+    years = sorted(prepared["year"].unique())
+    nonzero = prepared.loc[prepared["nominal_mnok"].ne(0), "year"]
+    default_cutoff = int(nonzero.max()) if not nonzero.empty else int(max(years))
+    c1, c2, c3 = st.columns(3)
+    cutoff = c1.selectbox("Investment cutoff year", years, index=years.index(default_cutoff), key="cost_cutoff")
+    currency = c2.selectbox("Display currency", ["NOK", "USD", "EUR", "GBP"], key="cost_currency")
+    fx = 1.0
+    if currency != "NOK":
+        fx = c3.number_input(f"NOK per 1 {currency} (user rate)", min_value=0.000001, value=1.0, format="%.6f",
+                             key=f"cost_fx_{currency}", help="Enter your own fixed conversion rate. No live FX feed is used.")
+        st.caption(f"Every investment year is divided by your fixed FX rate of {fx:g} NOK/{currency}. This is not historical FX conversion.")
+    eligible = prepared.loc[prepared["year"] <= cutoff]
+    latest = eligible.loc[eligible["year"].eq(cutoff), "nominal_mnok"]
+    if not latest.empty and latest.eq(0).all():
+        st.warning("Every reported investment at this cutoff is zero. SODIR zeros can be placeholders; do not assume spending was zero.")
+    st.caption(
+        f"Current and future years are excluded. Default cutoff is the latest nonzero investment year in this peer set ({default_cutoff}). "
+        "Reported zeros are retained; missing investment years are not filled. Check coverage in the download."
+    )
+    index = None
+    base_year = None
+    inflation = st.checkbox("Adjust to constant prices using my inflation index", key="cost_inflation")
+    if inflation:
+        p1, p2 = st.columns(2)
+        base_year = p1.number_input("Constant-price reference year", min_value=1900, max_value=2200,
+                                    value=CURRENT_YEAR - 1, key="cost_base_year")
+        upload = p2.file_uploader("Inflation index CSV (year,index)", type=["csv"], key="cost_index_upload")
+        template_years = sorted(set(eligible["year"]) | {int(base_year)})
+        template = "year,index\n" + "".join(f"{year},\n" for year in template_years)
+        st.download_button("Download inflation index template", template.encode("utf-8"),
+                           file_name="inflation_index_template.csv", mime="text/csv")
+        st.caption("Supply a positive index for every investment year and the reference year. Annual nominal cost × reference index / annual index, then divide by the fixed FX rate. No automatic inflation series is supplied.")
+        if upload is None:
+            st.info("Upload your completed inflation index to calculate constant-price benchmarks.")
+            return
+        try:
+            index = inv.parse_price_index(upload.getvalue())
+        except (ValueError, pd.errors.ParserError, UnicodeError) as exc:
+            st.error(f"Could not read the inflation index: {exc}")
+            return
+    price_basis = f"constant {base_year}" if inflation else "nominal"
+    try:
+        adjusted = inv.adjusted_investments(eligible, fx, index, base_year)
+        summary, annual = inv.benchmark_tables(adjusted, peers, yearly, wells, cutoff)
+    except ValueError as exc:
+        st.error(f"Could not calculate investment benchmarks: {exc}")
+        return
+    summary["currency"] = currency
+    summary["price_basis"] = price_basis
+    summary["nok_per_currency_unit"] = fx
+    summary["reference_year"] = base_year
+    annual["currency"] = currency
+    annual["price_basis"] = price_basis
+    annual["reference_year"] = base_year
+    costs = peers.join(summary.drop(columns=["recoverable_oe_latest"]))
+    incomplete = int(summary["missing_investment_years"].gt(0).sum())
+    if incomplete:
+        st.warning(f"{incomplete} field(s) have gaps within their reported investment history. Cumulative totals sum only reported years; inspect coverage in the table.")
+    unit_money = f"million {currency} ({price_basis})"
+    unit_boe = f"{currency}/boe ({price_basis})"
+    label = st.selectbox("Investment benchmark metric", list(inv.METRICS), key="cost_metric")
+    metric = inv.METRICS[label]
+    unit = unit_boe if metric.endswith("_boe") else unit_money + ("/well" if "well" in metric or "producer" in metric else "")
+    valid = costs[metric].dropna()
+    k1, k2, k3 = st.columns(3)
+    selected_value = costs.loc[highlight, metric] if highlight in costs.index else None
+    k1.metric("Selected field", fmt(selected_value, "{:,.2f}"))
+    k2.metric("Peer median", fmt(valid.median(), "{:,.2f}"))
+    k3.metric("Fields with usable metric", str(len(valid)))
+    st.caption(f"Metric units: {unit}. Investment through {cutoff}; recoverable volumes use the latest resource estimate, not historical reserves.")
+    show_chart(figures.investment_ranking(costs, metric, label, unit, color_key, color_column, highlight, dark))
+    show_chart(figures.box_by_category(costs, metric, color_column, label + " by " + color_key.lower(), unit,
+                                      highlight=highlight, dark=dark, color_key=color_key))
+    histories = {"Annual investment": "investment_million", "Cumulative investment": "cumulative_million",
+                 "Annual investment / annual produced boe": "per_annual_boe"}
+    history_label = st.radio("Investment history", list(histories), horizontal=True, key="cost_history")
+    history_metric = histories[history_label]
+    show_chart(figures.investment_history(annual, peers, history_metric, history_label,
+                                         unit_boe if history_metric == "per_annual_boe" else unit_money,
+                                         color_key, color_column, highlight, dark))
+    st.dataframe(summary.round(3), width="stretch")
+    d1, d2 = st.columns(2)
+    d1.download_button("Download investment benchmarks CSV", summary.to_csv().encode("utf-8"),
+                       file_name="investment_benchmarks.csv", mime="text/csv")
+    d2.download_button("Download annual investment metrics CSV", annual.to_csv(index=False).encode("utf-8"),
+                       file_name="investment_history.csv", mime="text/csv")
+    st.caption(
+        f"1 Sm³ o.e. = {inv.BOE_PER_SM3} boe. Investment per produced boe uses cumulative production through the cutoff, "
+        "including test volumes; investment per recoverable boe uses latest total recoverable o.e. "
+        "Well denominators count development wellbores completed through the cutoff (including sidetracks, excluding "
+        "predrilled/never-drilled and unknown completion years), not unique wells. Total field investment includes facilities "
+        "and other capital, so investment/well is not drilling cost. Negative investment revisions are retained. "
+        "These are gross field measures, not equity costs, breakeven, OPEX or full-life forecasts."
+    )
 
 
 # ----------------------------------------------------------------------------- sidebar
@@ -304,9 +549,49 @@ if section == "Overview":
     if not any(sections.values()):
         st.info("No field descriptions available.")
     else:
-        for heading in SECTIONS:
-            with st.expander(heading):
-                st.markdown(sections[heading] or "Not available.")
+        columns = st.columns(2, gap="large")
+        for i, heading in enumerate(SECTIONS):
+            with columns[i % 2]:
+                paragraphs = "".join(f"<p>{escape(paragraph)}</p>" for paragraph in
+                                     sections[heading].split("\n") if paragraph.strip())
+                st.markdown(f"<article class='description-card'><h3>{escape(heading)}</h3>"
+                            f"{paragraphs or '<p>Not available.</p>'}</article>", unsafe_allow_html=True)
+    st.subheader("Sourced reservoir and fluid parameters")
+    st.caption("Kvitebjørn is the first literature review. Check evidence_status: official descriptions and accessible abstracts are distinguished from provisional indexed excerpts where the full paper was unavailable. Values apply to the stated reservoir/conditions, not universal field constants.")
+    try:
+        parameters = field_parameters(selected_field)
+    except (OSError, ValueError, pd.errors.ParserError) as exc:
+        st.error(f"Could not load sourced reservoir parameters: {exc}")
+        parameters = pd.DataFrame()
+    if parameters.empty:
+        st.info("No source-linked reservoir observations have been registered for this field.")
+    else:
+        st.dataframe(parameters, hide_index=True, width="stretch",
+                     column_config={"source_url": st.column_config.LinkColumn("Publication / source"),
+                                    "evidence_url": st.column_config.LinkColumn("Evidence access")})
+        st.download_button("Download sourced reservoir parameters CSV", parameters.to_csv(index=False).encode("utf-8"),
+                           file_name=f"{selected_field}_reservoir_parameters.csv", mime="text/csv")
+    st.caption("Porosity, permeability, PVT, footprint and net/gross thickness require explicit source and interval context. Formation-top MD interval thickness is not net pay or true vertical reservoir thickness.")
+    if selected_field == "KVITEBJØRN":
+        st.warning("Numerical literature observations are provisional indexed excerpts, not a full-paper validation. Published Tarbert thicknesses have different scopes and have not been reconciled.")
+        st.info("Literature gaps: no verified numeric porosity, detailed fluid composition, dew-point pressure, viscosity, Z-factor, condensate density/API, net pay or reservoir footprint were located. The porosity study is linked for review; do not infer missing properties from gross formation thickness or production GOR.")
+    scenario = st.session_state.get("economic_scenarios", {}).get(selected_field)
+    st.subheader("Payback and cessation — scenario only")
+    if scenario:
+        st.write(f"Last calculated scenario: history through {scenario['cutoff']} · {scenario['mode']}.")
+        st.caption(scenario.get("forecast_description", scenario["mode"]))
+        a, b = st.columns(2)
+        a.metric("Scenario payback year", str(scenario["payback_year"]) if scenario["payback_year"] else "Not reached")
+        b.metric("Scenario last operating year", str(scenario["cessation_year"]) if scenario["cessation_year"] is not None else "Undetermined")
+        assumptions = scenario["assumptions"]
+        st.caption(
+            f"Scenario inputs: oil {assumptions['oil_usd_bbl']:g} USD/bbl · gas {assumptions['gas_usd_sm3']:g} USD/Sm³ · "
+            f"FX {assumptions['nok_per_usd']:g} NOK/USD · variable OPEX {assumptions['variable_opex_usd_boe']:g} USD/boe · "
+            f"fixed OPEX {assumptions['fixed_opex_mnok']:g} million NOK/year."
+        )
+        st.caption("Saved result from your last calculation, not refreshed automatically. Open Economics to review assumptions, change the prognosis or recalculate.")
+    else:
+        st.info("Open Economics to review prices, operating costs and prognosis assumptions before calculating payback, annual cash flow or a scenario cessation year.")
 
 # ============================================================================= PRODUCTION
 elif section == "Production":
@@ -391,6 +676,24 @@ elif section == "Wells & reservoir":
             tops = optional_dataset("tops")
             if not tops.empty:
                 field_tops = tops.loc[tops["wlbName"].isin(field_wells["wlbWellboreName"])].copy()
+                if field_tops.empty:
+                    st.info(
+                        f"SODIR publishes no formation tops for the {len(field_wells)} development "
+                        "wellbores listed for this field. This does not mean the field has no formations."
+                    )
+                    discovery_well = row.get("discovery_well")
+                    discovery_tops = tops.loc[tops["wlbName"].eq(discovery_well)].copy()
+                    if not discovery_tops.empty:
+                        if st.checkbox(f"Show discovery-well tops instead ({discovery_well})"):
+                            field_tops = discovery_tops
+                            st.caption(
+                                f"Source well: {discovery_well} (discovery well, not a development well). "
+                                "These intervals are not field-wide depths or proof of productive intervals."
+                            )
+                    else:
+                        st.info("No formation tops are published for the field's discovery well either.")
+                if field_tops.empty:
+                    st.stop()
                 field_tops["lsuTopDepth"] = pd.to_numeric(field_tops["lsuTopDepth"], errors="coerce")
                 field_tops["lsuBottomDepth"] = pd.to_numeric(field_tops["lsuBottomDepth"], errors="coerce")
                 if wanted:
@@ -399,9 +702,11 @@ elif section == "Wells & reservoir":
                     focus = field_tops.loc[mask]
                 else:
                     focus = field_tops.iloc[:0]
-                summary_tops = (focus if not focus.empty else field_tops).groupby("lsuName").agg(
+                displayed_tops = (focus if not focus.empty else field_tops).copy()
+                displayed_tops["thickness"] = displayed_tops["lsuBottomDepth"] - displayed_tops["lsuTopDepth"]
+                summary_tops = displayed_tops.groupby("lsuName").agg(
                     wells=("wlbName", "nunique"), top_min=("lsuTopDepth", "min"), top_median=("lsuTopDepth", "median"),
-                    top_max=("lsuTopDepth", "max"), thickness_median=("lsuBottomDepth", lambda s: float((s - focus.loc[s.index, "lsuTopDepth"]).median()) if not focus.empty else float("nan")),
+                    top_max=("lsuTopDepth", "max"), thickness_median=("thickness", "median"),
                 ).sort_values("top_median")
                 st.dataframe(summary_tops.round(0), width="stretch")
                 st.caption(("Rows limited to the extracted producing formations." if not focus.empty else "No extracted formation matched; showing all units."))
@@ -432,6 +737,12 @@ elif section == "Reserves":
 elif section == "Investments":
     header("Investments", selected_field.title())
     show_chart(callback_investments(selected_field, optional_dataset("investments")))
+    st.caption("SODIR investment is nominal million NOK, not operating cost. Open Benchmark → Investment cost for peer comparisons, per-boe/per-well measures and user FX/inflation adjustments.")
+
+elif section == "Economics":
+    header("Scenario economics", selected_field.title(), "Editable pre-tax screening: annual cash flow, capital payback and prognosis-based economic limit.")
+    master, facts, pt, tables = get_master()
+    economics_workspace(selected_field, tables)
 
 # ============================================================================= MAP
 elif section == "Map":
@@ -456,9 +767,10 @@ elif section == "Map":
             )
             st.iframe(
                 map_document(selected_field, geometry, {key: catalogue[key] for key in selected_layers}, dark=dark),
-                height=565,
+                height=665,
             )
             st.caption("Layers come from SODIR's live WMS catalogue. Accent boundaries / points come from its field geometry service. Only selected overlays request tiles.")
+            st.caption("Use the map's layer menu for Street, Light, Gray, Dark or Satellite. Draw lines to measure distance, polygons/rectangles for area, or circles for radius. Export before changing settings; drawings are not persisted. Circle exports use a GeoJSON point with radius_m.")
             rendered = True
         except DataUnavailable as exc:
             st.warning(f"{exc} Showing the official viewer instead.")
@@ -472,7 +784,7 @@ elif section == "Map":
 # ============================================================================= BENCHMARK
 elif section == "Benchmark":
     header("Benchmark", "How does the field compare with its peers?",
-           "Normalised production profiles, reserve intensity, recovery factors, well counts and GOR / water-cut development across NCS fields. "
+           "Normalised production profiles, reserve intensity, recovery factors, well counts, investment intensity and GOR / water-cut development across NCS fields. "
            "Filter the peer set by formation, drainage strategy, hydrocarbon phase and volumes; import your own profile or generate an average profile.")
 
     with st.container(border=True):
@@ -507,7 +819,10 @@ elif section == "Benchmark":
         formations_sel = g1.multiselect("Producing formation", formation_options, key="bm_fm")
         groups_sel = g2.multiselect("Group", group_options, key="bm_gp")
         lith_sel = g3.multiselect("Lithology", lith_options, key="bm_lith")
-        hpht_sel = g4.selectbox("Pressure regime", ["All", "Normal only", "HPHT only"], key="bm_hpht")
+        hpht_sel = g4.selectbox("Pressure regime", ["All", "Non-HPHT (stated) only", "HPHT only"], key="bm_hpht")
+        d1, d2 = st.columns(2)
+        development_sel = d1.multiselect("Development type", sorted(master["development_type"].dropna().unique()), key="bm_development")
+        subareas_sel = d2.multiselect("Production sub-area", sorted(master["sub_area"].dropna().unique()), key="bm_subarea")
         h1, h2, h3, h4 = st.columns(4)
         max_inplace = ceil_ten(master["inplace_oe"].max())
         inplace_range = h1.slider("In-place volume · million Sm³ o.e.", 0.0, max_inplace, (0.0, max_inplace), key="bm_inplace")
@@ -522,9 +837,13 @@ elif section == "Benchmark":
     mask = bm.apply_filters(
         master, hc_types=hc_types, areas=areas, drives=drives, formations=formations_sel, groups=groups_sel,
         statuses=statuses, inplace_range=inplace_range, recoverable_range=rec_range, start_range=start_range,
-        min_years=int(min_years), hpht={"All": None, "Normal only": False, "HPHT only": True}[hpht_sel],
+        min_years=int(min_years), hpht={"All": None, "Non-HPHT (stated) only": False, "HPHT only": True}[hpht_sel],
         lithologies=lith_sel, include_missing=include_missing,
     )
+    if development_sel:
+        mask &= master["development_type"].isin(development_sel)
+    if subareas_sel:
+        mask &= master["sub_area"].isin(subareas_sel)
     peers = master.loc[mask]
     peer_fields = list(peers.index)
     highlight = selected_field if selected_field in peers.index else None
@@ -539,7 +858,7 @@ elif section == "Benchmark":
     st.markdown(f"<p class='lede'><b>{escape(peer_insight(peers, env, basis, unit))}</b></p>", unsafe_allow_html=True)
 
     tabs = st.tabs(["Production profiles", "Reserve intensity", "Recovery factor", "Producers vs injectors",
-                    "GOR & water cut", "Compare & type curve", "Reservoir P/T", "Peer table"])
+                    "GOR & water cut", "Compare & type curve", "Reservoir P/T", "Peer table", "Investment cost"])
 
     with tabs[0]:
         o1, o2 = st.columns([1, 1])
@@ -666,13 +985,19 @@ elif section == "Benchmark":
 
     with tabs[7]:
         columns = ["hc_type", "area", "status", "drainage_strategy", "formations_text", "groups_text", "main_age", "main_lithology",
-                   "depth_mid_m", "hpht", "pressure_bar", "temperature_c", "start_year", "years_on_production", "peak_year", "cum_oe",
+                   "depth_mid_m", "hpht_label", "development_type", "gas_export_route", "liquids_export_route",
+                   "reservoir_thickness_min_m", "reservoir_thickness_max_m",
+                   "reservoir_footprint_min_km2", "reservoir_footprint_max_km2",
+                   "pressure_bar", "temperature_c", "start_year", "years_on_production", "peak_year", "cum_oe",
                    "recoverable_oe", "remaining_oe", "inplace_oe", "rf_oil", "rf_gas", "rf_oe", "producers_drilled", "producers_active",
                    "injectors_drilled", "injectors_active", "injector_producer_ratio", "reserves_per_producer", "peak_offtake_pct",
                    "cum_water_cut", "concept_text", "sub_area", "operator"]
         table = peers[[c for c in columns if c in peers]]
         st.dataframe(table, width="stretch", height=520)
         st.download_button("Download peer table CSV", table.to_csv().encode("utf-8"), file_name="benchmark_peers.csv", mime="text/csv")
+
+    with tabs[8]:
+        investment_workspace(peers, yearly, wells, color_key, color_column, highlight)
 
 # ============================================================================= DATA & QA
 elif section == "Data & QA":
@@ -698,5 +1023,7 @@ elif section == "Data & QA":
         "- **Depth** is the reservoir depth sentence (water-depth sentences are excluded); the mid-point drives the P/T estimate.\n"
         "- **Well counts** come from the SODIR development-wellbore table (purpose and status); counts stated in the text are shown separately.\n"
         "- **Recovery factor** = latest recoverable ÷ in-place volume per product; produced share = cumulative production ÷ recoverable.\n"
-        "- **Reserve intensity** = recoverable o.e. per drilled production well; peak offtake = peak annual o.e. ÷ recoverable o.e."
+        "- **Reserve intensity** = recoverable o.e. per drilled production well; peak offtake = peak annual o.e. ÷ recoverable o.e.\n"
+        "- **Investment intensity** uses nominal SODIR field investment through a stated cutoff, with optional user inflation/FX adjustments. "
+        "It is not OPEX, breakeven or individual well drilling cost."
     )

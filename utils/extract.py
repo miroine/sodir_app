@@ -286,7 +286,68 @@ def extract_sub_area(text):
 
 
 def hpht_flag(text):
-    return bool(re.search(r"\bHPHT\b|\bHTHP\b|high pressure and high temperature|high temperature and high pressure", text or "", re.I))
+    return hpht_status(text) == "HPHT (stated)"
+
+
+def hpht_status(text):
+    text = text or ""
+    if re.search(r"\b(?:not|non)[ -]?(?:an? )?HPHT\b", text, re.I):
+        return "Non-HPHT (stated)"
+    if re.search(r"\bHPHT\b|\bHTHP\b|high pressure and high temperature|high temperature and high pressure", text, re.I):
+        return "HPHT (stated)"
+    return "Not stated"
+
+
+def development_type(text):
+    tags = extract_tags(text, CONCEPT_TAGS)
+    subsea = "Subsea tie-back" in tags or "Subsea template" in tags
+    platform = any(t in tags for t in ("Fixed platform", "Concrete GBS", "TLP", "Semi-submersible", "FPSO", "Spar / FSU"))
+    if subsea and platform:
+        return "Platform / floating facility + subsea"
+    if subsea:
+        return "Subsea tie-back" if "Subsea tie-back" in tags else "Subsea development"
+    if platform:
+        return "Floating development" if any(t in tags for t in ("FPSO", "TLP", "Semi-submersible", "Spar / FSU")) else "Platform development"
+    return "Not stated"
+
+
+def export_routes(text):
+    """Keep source clauses rather than guessing terminals from a generic place-name list."""
+    clauses = re.split(r"(?<=[.!?])\s+|;\s*|,\s*while\s+|\bwhereas\b", text or "", flags=re.I)
+    gas, liquids = [], []
+    for clause in clauses:
+        clause = clause.strip()
+        if not re.search(r"transport|export|pipeline|sent|shipp|tankers?|terminal", clause, re.I):
+            continue
+        if re.search(r"\bgas\b", clause, re.I):
+            gas.append(clause)
+        if re.search(r"\boil\b|\bcondensate\b|\bliquids\b|\bNGL\b", clause, re.I):
+            liquids.append(clause)
+    return "; ".join(gas) or None, "; ".join(liquids) or None
+
+
+def reservoir_dimensions(text):
+    number = r"(\d+(?:\.\d+)?)"
+    span = number + r"(?:\s*(?:-|–|to)\s*" + number + r")?"
+    patterns = (
+        ("thickness", rf"(?:reservoir|sandstone|net pay|gross thickness)[^.]*?\b(?:thickness(?: of| is)?|thick(?:ness)?(?: of| is)?)\s*(?:about |approximately |up to )?{span}\s*(?:metres|meters|m\b)"),
+        ("thickness", rf"{span}\s*(?:metres|meters|m)\s+thick\b"),
+        ("footprint", rf"(?:reservoir|field)\s+(?:covers?|extends? over|has an area of)\s*(?:about |approximately )?{span}\s*(?:km2|km²|square kilometres|square kilometers)"),
+    )
+    result = {"reservoir_thickness_min_m": None, "reservoir_thickness_max_m": None,
+              "reservoir_thickness_evidence": None, "reservoir_footprint_min_km2": None,
+              "reservoir_footprint_max_km2": None}
+    for kind, pattern in patterns:
+        match = re.search(pattern, text or "", re.I)
+        if not match:
+            continue
+        low, high = float(match.group(1)), float(match.group(2) or match.group(1))
+        if kind == "thickness" and result["reservoir_thickness_min_m"] is None:
+            result.update(reservoir_thickness_min_m=min(low, high), reservoir_thickness_max_m=max(low, high),
+                          reservoir_thickness_evidence=match.group(0))
+        elif kind == "footprint":
+            result.update(reservoir_footprint_min_km2=min(low, high), reservoir_footprint_max_km2=max(low, high))
+    return result
 
 
 def extract_pressure_temperature(text):
@@ -327,6 +388,7 @@ def extract_field_facts(sections):
     producers, injectors, slots = extract_well_counts(development + " " + recovery + " " + status)
     rf_initial, rf_expected = extract_recovery_factor(recovery + " " + status)
     pressure_bar, temperature_c = extract_pressure_temperature(reservoir)
+    gas_export, liquids_export = export_routes(sections.get("Transport", ""))
     facts = dict(
         formations=extract_formations(reservoir),
         groups=extract_groups(reservoir),
@@ -336,6 +398,9 @@ def extract_field_facts(sections):
         depth_mid_m=(depth_min + depth_max) / 2 if depth_min is not None else None,
         water_depth_min_m=water_min, water_depth_max_m=water_max,
         hpht=hpht_flag(reservoir),
+        hpht_status=hpht_status(reservoir),
+        development_type=development_type(development),
+        gas_export_route=gas_export, liquids_export_route=liquids_export,
         pressure_bar_text=pressure_bar, temperature_c_text=temperature_c,
         mechanisms=mechanisms,
         drainage_strategy=primary_drive(recovery, mechanisms),
@@ -347,6 +412,7 @@ def extract_field_facts(sections):
         reservoir_quality=_quality(reservoir),
     )
     facts.update(extract_years(development + " " + status))
+    facts.update(reservoir_dimensions(reservoir))
     facts["text_length"] = len(everything)
     return facts
 

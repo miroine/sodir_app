@@ -180,6 +180,45 @@ class CalculationTests(unittest.TestCase):
 
 
 class DashboardTests(unittest.TestCase):
+    def test_missing_development_tops_offer_explicit_discovery_well_option(self):
+        tables = datasets()
+        tables["overview"]["wlbName"] = ["30/9-1", None]
+        tables["tops"] = pd.DataFrame({
+            "wlbName": ["30/9-1", "99/1-1"],
+            "lsuName": ["TARBERT FM", "UNRELATED FM"],
+            "lsuTopDepth": [2600, 1000],
+            "lsuBottomDepth": [2700, 1200],
+        })
+        with patch("utils.data.load_dataset", side_effect=lambda name: tables[name]):
+            app = AppTest.from_file(str(ROOT / "app.py")).run()
+            app.sidebar.radio[0].set_value("Wells & reservoir").run()
+            app.checkbox[0].check().run()
+            self.assertEqual(len(app.exception), 0)
+            self.assertTrue(any("no formation tops" in item.value for item in app.info))
+            self.assertEqual(len(app.dataframe), 2)
+            app.checkbox[1].check().run()
+            self.assertEqual(len(app.exception), 0)
+            summary = app.dataframe[-1].value
+            self.assertEqual(summary.index.tolist(), ["TARBERT FM"])
+            self.assertEqual(summary.loc["TARBERT FM", "thickness_median"], 100)
+            self.assertTrue(any("not a development well" in item.value for item in app.caption))
+
+    def test_development_tops_without_extracted_match_show_all_units_and_thickness(self):
+        tables = datasets()
+        tables["tops"] = pd.DataFrame({
+            "wlbName": ["30/9-B-1 H"],
+            "lsuName": ["OTHER FM"],
+            "lsuTopDepth": [2000],
+            "lsuBottomDepth": [2100],
+        })
+        with patch("utils.data.load_dataset", side_effect=lambda name: tables[name]):
+            app = AppTest.from_file(str(ROOT / "app.py")).run()
+            app.sidebar.radio[0].set_value("Wells & reservoir").run()
+            app.checkbox[0].check().run()
+            self.assertEqual(len(app.exception), 0)
+            self.assertEqual(app.dataframe[-1].value.loc["OTHER FM", "thickness_median"], 100)
+            self.assertEqual(len(app.checkbox), 1)
+
     def test_themes_period_filter_and_single_month(self):
         tables = datasets()
         with patch("utils.data.load_dataset", side_effect=lambda name: tables[name]):
@@ -228,7 +267,8 @@ class DashboardTests(unittest.TestCase):
             self.assertIn("2,300–2,700 m", html)
             self.assertIn("2 drilled · 1 active", html)
             self.assertIn("oil 70%", html)
-            self.assertEqual(len(app.expander), 5)
+            self.assertEqual(len(app.expander), 0)
+            self.assertIn("description-card", html)
             app.sidebar.selectbox[0].select("EMPTY").run()
             self.assertEqual(len(app.exception), 0)
             self.assertTrue(all(metric.value == "—" for metric in app.metric))

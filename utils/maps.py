@@ -126,5 +126,5 @@ def map_document(selected_field, geometry, layers, dark=False):
         ),
         allow_nan=False,
     ).replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
-    template = (Path(__file__).resolve().parent / "map.html").read_text()
+    template = (Path(__file__).resolve().parent / "map.html").read_text(encoding="utf-8")
     return template.replace("__MAP_DATA__", payload)

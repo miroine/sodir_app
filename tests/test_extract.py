@@ -31,6 +31,27 @@ GULLFAKS_RESERVOIR = ("Gullfaks produces oil from Middle Jurassic sandstone in t
 
 
 class ExtractionTests(unittest.TestCase):
+    def test_development_exports_thickness_and_unknown_hpht(self):
+        sections = {
+            "Development": "The field is developed with an integrated drilling and processing facility with a steel jacket.",
+            "Reservoir": "The reservoir is 50-100 metres thick at a depth of 4000 metres. It initially had high pressure and high temperature (HPHT).",
+            "Transport": "Rich gas is transported through the Kvitebjørn Gas Pipeline to the Kollsnes terminal, while condensate is transported through Troll Oil Pipeline II to Mongstad.",
+        }
+        facts = extract.extract_field_facts(sections)
+        self.assertEqual(facts["development_type"], "Platform development")
+        self.assertEqual(facts["hpht_status"], "HPHT (stated)")
+        self.assertEqual(facts["reservoir_thickness_min_m"], 50)
+        self.assertEqual(facts["reservoir_thickness_max_m"], 100)
+        self.assertIn("Kollsnes", facts["gas_export_route"])
+        self.assertNotIn("Mongstad", facts["gas_export_route"])
+        self.assertIn("Mongstad", facts["liquids_export_route"])
+        self.assertEqual(extract.hpht_status("No pressure regime was described."), "Not stated")
+        self.assertEqual(extract.hpht_status("This is not an HPHT reservoir."), "Non-HPHT (stated)")
+        self.assertFalse(extract.hpht_flag("A non-HPHT field."))
+        self.assertEqual(extract.development_type("Two subsea templates tied-back to Host A."), "Subsea tie-back")
+        self.assertIsNone(extract.reservoir_dimensions("Reservoirs lie at depths of 4000 metres.")["reservoir_thickness_min_m"])
+        self.assertEqual(extract.reservoir_dimensions("The field covers 10-20 km².")["reservoir_footprint_max_km2"], 20)
+
     def test_oseberg_facts(self):
         facts = extract.extract_field_facts(OSEBERG)
         self.assertEqual(facts["formations"], ["Oseberg", "Tarbert", "Etive", "Ness", "Cook"])
@@ -117,7 +138,8 @@ class PressureTemperatureTests(unittest.TestCase):
         }, index=pd.Index(["EKOFISK", "NEWFIELD", "DEEPFIELD", "BLANK"], name="fldName"))
         table = pt_for_fields(facts, curated=curated)
         self.assertEqual(table.loc["EKOFISK", "pressure_bar"], 492)
-        self.assertEqual(table.loc["EKOFISK", "confidence"], "high")
+        self.assertEqual(table.loc["EKOFISK", "confidence"], "unverified")
+        self.assertIn("Unverified legacy seed", table.loc["EKOFISK", "source"])
         self.assertEqual(table.loc["NEWFIELD", "confidence"], "estimate")
         self.assertEqual(table.loc["NEWFIELD", "pressure_bar"], 202)
         self.assertTrue(pd.isna(table.loc["DEEPFIELD", "pressure_bar"]))

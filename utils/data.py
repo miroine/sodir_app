@@ -95,6 +95,9 @@ def prepare_wells(data):
     for column in ("wlbTotalDepth", "wlbFinalVerticalDepth", "wlbWaterDepth", "wlbKellyBushElevation",
                    "wlbEntryYear", "wlbCompletionYear"):
         data[column] = pd.to_numeric(data[column], errors="coerce")
+    for column in ("wlbEntryYear", "wlbCompletionYear"):
+        years = data[column]
+        data[column] = years.where(years.gt(0) & years.mod(1).eq(0))
     for column in ("wlbPurpose", "wlbStatus", "wlbContent", "wlbField"):
         data[column] = data[column].astype("string").str.strip().str.upper()
     data["wlbSubSea"] = data["wlbSubSea"].astype("string").str.strip().str.upper()

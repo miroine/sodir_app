@@ -19,6 +19,52 @@ def category_colors(values, key):
     return colors
 
 
+def investment_ranking(data, metric, label, unit, color_key, color_column, highlight=None, dark=False):
+    ranked = data.dropna(subset=[metric]).sort_values(metric)
+    if ranked.empty:
+        return None
+    colors = category_colors(ranked[color_column], color_key)
+    fig = go.Figure()
+    for category, part in ranked.groupby(color_column, dropna=False):
+        fig.add_bar(
+            x=part[metric], y=[f.title() for f in part.index], name=str(category), orientation="h",
+            marker_color=[theme.ACCENT if f == highlight else colors.get(str(category), theme.GREY) for f in part.index],
+            hovertemplate="<b>%{y}</b><br>%{x:,.2f} " + unit + "<extra>%{fullData.name}</extra>",
+        )
+    fig.update_layout(
+        xaxis_title=unit, yaxis=dict(categoryorder="array", categoryarray=[f.title() for f in ranked.index]),
+        barmode="group",
+    )
+    return theme.style(fig, label, "Colour: " + color_key.lower() + " · selected field in amber",
+                       "SODIR nominal field investment; user adjustments where selected", dark=dark,
+                       height=max(440, len(ranked) * 23 + 180))
+
+
+def investment_history(annual, master, metric, label, unit, color_key, color_column, highlight=None, dark=False):
+    if annual.empty or annual[metric].notna().sum() == 0:
+        return None
+    colors = category_colors(master[color_column], color_key)
+    fig = go.Figure()
+    shown = set()
+    for field, part in annual.groupby("fldName"):
+        part = part.set_index("year").reindex(range(int(part["year"].min()), int(part["year"].max()) + 1)).rename_axis("year").reset_index()
+        category = str(master.loc[field, color_column])
+        selected = field == highlight
+        fig.add_scatter(
+            x=part["year"], y=part[metric], mode="lines+markers" if selected else "lines",
+            name=f"{field.title()} (selected)" if selected else category, legendgroup=category,
+            showlegend=selected or category not in shown, connectgaps=False,
+            line=dict(color=theme.ACCENT if selected else colors.get(category, theme.GREY), width=3 if selected else 1),
+            opacity=1 if selected else 0.5,
+            hovertemplate=f"<b>{field.title()}</b><br>%{{x:.0f}}: %{{y:,.2f}} {unit}<extra></extra>",
+        )
+        if not selected:
+            shown.add(category)
+    fig.update_layout(xaxis=dict(title="Calendar year", tickformat="d"), yaxis_title=unit)
+    return theme.style(fig, label, "Missing years are gaps, not zero investment",
+                       "SODIR nominal field investment; user adjustments where selected", dark=dark, height=520)
+
+
 def _label(master, field):
     return field.title() if isinstance(field, str) else str(field)
 
@@ -269,7 +315,13 @@ def wells_timeline(wells_field, title="Development wells drilled per year", dark
     for purpose, part in data.groupby("wlbPurpose"):
         counts = part.groupby("wlbCompletionYear").size()
         fig.add_bar(x=counts.index, y=counts.values, name=str(purpose).title(), marker_color=colors.get(purpose, theme.GREY))
-    fig.update_layout(barmode="stack", xaxis_title="Completion year", yaxis_title="Wells")
+    year_span = data["wlbCompletionYear"].max() - data["wlbCompletionYear"].min()
+    fig.update_layout(
+        barmode="stack",
+        xaxis=dict(title="Completion year", type="linear", tickformat="d",
+                   dtick=max(1, int(np.ceil(year_span / 10)))),
+        yaxis_title="Wells",
+    )
     return theme.style(fig, title, None, "SODIR wellbore_development_all", dark=dark, height=380)
 
 

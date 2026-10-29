@@ -4,6 +4,7 @@ import pandas as pd
 
 from utils import benchmark as bm
 from utils import figures
+from utils.data import prepare_wells
 from utils.extract import facts_table
 from utils.pt import pt_for_fields
 from test_dashboard import datasets
@@ -19,6 +20,34 @@ def master_tables(current_year=2025):
 
 
 class BenchmarkTests(unittest.TestCase):
+    def test_unknown_well_years_do_not_distort_timeline_or_producer_counts(self):
+        wells = prepare_wells(pd.DataFrame({
+            "wlbField": ["TEST"] * 7,
+            "wlbPurpose": ["PRODUCTION"] * 7,
+            "wlbStatus": ["PRODUCING"] * 7,
+            "wlbSubSea": ["NO"] * 7,
+            "wlbMultilateral": ["NO"] * 7,
+            "wlbEntryYear": [0, -1, None, "unknown", 2001.5, 2001, 2002],
+            "wlbCompletionYear": [0, -1, None, "unknown", 2001.5, 2001, 2002],
+        }))
+        for column in ("wlbEntryYear", "wlbCompletionYear"):
+            self.assertTrue(wells[column].iloc[:5].isna().all())
+        figure = figures.wells_timeline(wells)
+        self.assertEqual(list(figure.data[0].x), [2001, 2002])
+        self.assertEqual(list(figure.data[0].y), [1, 1])
+        self.assertEqual(figure.layout.xaxis.tickformat, "d")
+        self.assertEqual(figure.layout.xaxis.dtick, 1)
+        counts = bm.producers_by_year(wells, 2003)
+        self.assertEqual(counts["year"].tolist(), [2001, 2002, 2003])
+        self.assertEqual(counts["producers"].tolist(), [1, 2, 2])
+        summary = bm.well_summary(wells).loc["TEST"]
+        self.assertEqual(summary["first_well_year"], 2001)
+        self.assertEqual(summary["wells_drilled"], 7)
+        self.assertIsNone(figures.wells_timeline(wells.iloc[:5]))
+        single = figures.wells_timeline(wells.iloc[-1:])
+        self.assertEqual(list(single.data[0].x), [2002])
+        self.assertEqual(single.layout.xaxis.dtick, 1)
+
     def test_master_table_metrics(self):
         master, tables = master_tables()
         row = master.loc["OSEBERG"]
@@ -38,7 +67,8 @@ class BenchmarkTests(unittest.TestCase):
         self.assertEqual(row["drainage_strategy"], "Water & gas injection")
         self.assertEqual(row["main_formation"], "Oseberg")
         self.assertEqual(row["hc_type"], "OIL/GAS")
-        self.assertEqual(row["pt_confidence"], "medium")
+        self.assertEqual(row["hpht_label"], "Not stated")
+        self.assertEqual(row["pt_confidence"], "unverified")
         self.assertEqual(master.loc["EMPTY", "drainage_strategy"], "Not stated")
         self.assertEqual(master.loc["EMPTY", "formations"], [])
         self.assertTrue(pd.isna(master.loc["EMPTY", "start_year"]))
@@ -102,6 +132,7 @@ class BenchmarkTests(unittest.TestCase):
         self.assertEqual(bm.apply_filters(master, min_years=4).sum(), 1)
         self.assertEqual(bm.apply_filters(master, min_years=5).sum(), 0)
         self.assertEqual(bm.apply_filters(master, hpht=True).sum(), 0)
+        self.assertEqual(bm.apply_filters(master, hpht=False).sum(), 0)
 
     def test_profile_upload_and_type_curve(self):
         csv = b"Year;Oil (million Sm3);Gas (billion Sm3);Water;Wells\n2030;1,0;0,5;0,1;4\n2031;2,0;1,0;0,3;6\n"

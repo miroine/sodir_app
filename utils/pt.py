@@ -22,7 +22,11 @@ def load_curated(path=CURATED_PATH):
         table = pd.read_csv(path)
     except (OSError, pd.errors.ParserError):
         return pd.DataFrame(columns=PT_COLUMNS)
-    return normalise_pt(table)
+    table = normalise_pt(table)
+    unverified = ~table["source"].astype("string").str.contains("https://", na=False)
+    table.loc[unverified, "confidence"] = "unverified"
+    table.loc[unverified, "source"] = "Unverified legacy seed; not individually source-checked: " + table.loc[unverified, "source"].fillna("")
+    return table
 
 
 def normalise_pt(table):
