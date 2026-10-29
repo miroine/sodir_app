@@ -114,12 +114,19 @@ interval; missing years/invalid volumes are explicit errors. SODIR zeros can be 
 * Discounted cash flow assumes year-end cash flows discounted from the start of the first modeled
   year. NPV and discounted payback use the same user discount rate.
 * No forecast means no cessation estimate. **History-fitted decline** fits log(volume) against calendar
-  year separately per product using available observations in the last five calendar years through cutoff.
-  At least three consecutive positive annual observations are required for a producing product.
-  Rising or interrupted histories are rejected with an explicit request for a prognosis; zero at cutoff
-  stays zero (no restart). Flat histories give zero decline. Forecasts use the fitted cutoff volume,
-  not a forced match to the final actual point. Diagnostics report effective decline, log-space R²,
-  sample years/count and fitted cutoff volumes, and can be downloaded.
+  year for the **main phase only**, using the last five calendar years through cutoff.
+  Auto selects the largest window-total oil-equivalent contribution: oil, gas and condensate × 1,
+  NGL × 1.9 in SODIR's MSm³ liquids/GSm³ gas units. A manual main-phase override is available.
+  At least three consecutive positive annual main-phase observations are required.
+  Rising or interrupted main-phase histories require another phase or an imported prognosis;
+  secondary-product growth/zeros do not block fitting. Flat main-phase histories give zero decline.
+  Each secondary forecast equals the main-phase forecast multiplied by its history total divided by
+  the main-phase history total over the same window (ratio of totals, not mean annual ratios).
+  Products absent throughout the window stay zero; a product zero at cutoff but positive earlier can
+  reappear under this fixed-mix assumption. Ratios use native units; gas/oil × 1,000 gives Sm³/Sm³ GOR.
+  Forecasts use the fitted main-phase cutoff volume, not a forced match to the final actual point.
+  Downloadable diagnostics report main phase, effective decline, main-fit log-space R², ratio/units,
+  sample years/count, derived/fitted status and fitted cutoff volumes.
   This ignores reserve/facilities constraints, new wells and compression; it is **not** an operator prognosis.
 * CSV/XLSX prognosis imports require consecutive whole years immediately after the historical cutoff
   and oil/gas/condensate/ngl product volumes (same units as above). Omitted products mean zero; blanks,

@@ -328,17 +328,26 @@ def economics_workspace(field, tables):
         st.dataframe(investment_window, width="stretch", hide_index=True)
     if mode == "History-fitted decline":
         horizon = st.number_input("Forecast horizon · years", min_value=1, max_value=100, value=30, key="econ_horizon")
-        st.warning("Separate log-linear exponential fits use the last five calendar years through cutoff "
-                   "(at least three positive observations per producing product). Rising/interrupted histories "
-                   "require an imported prognosis. No new wells, reserves or facilities constraints; not an operator forecast.")
+        main_phase = st.selectbox("Main phase for decline fitting", ["auto", *econ.PRODUCTS],
+                                  format_func=lambda value: "Auto · largest recent oil-equivalent volume" if value == "auto" else value.title(),
+                                  key="econ_main_phase")
+        st.warning("Only the main phase is fitted over the last five calendar years through cutoff "
+                   "(at least three positive consecutive annual observations). Auto selects the largest total "
+                   "oil-equivalent volume (NGL × 1.9). Other products use constant window-total ratios to "
+                   "the main phase, regardless of their individual trends. No new wells, reserves or facilities constraints.")
         try:
-            forecast, fit_diagnostics = econ.fitted_forecast(production, int(cutoff), int(horizon))
+            forecast, fit_diagnostics = econ.fitted_forecast(
+                production, int(cutoff), int(horizon), main_phase=None if main_phase == "auto" else main_phase)
         except ValueError as exc:
             st.error(str(exc))
             return
         st.dataframe(fit_diagnostics, width="stretch", hide_index=True)
-        st.caption("R² is measured in log-volume space. Forecast starts from the fitted cutoff volume, "
-                   "not necessarily the last observed volume. A cutoff-zero product stays zero; no restart is inferred.")
+        fitted_phase = fit_diagnostics["main_phase"].iloc[0]
+        st.caption(f"Main phase: {fitted_phase.title()}. R² applies only to its log-volume fit. "
+                   "Secondary volume = main forecast × (secondary history total / main history total). "
+                   "Ratios use native units: liquids MSm³, gas GSm³; multiply gas/oil by 1,000 for GOR in Sm³/Sm³. "
+                   "Forecast starts from fitted volumes, not necessarily cutoff observations. "
+                   "A secondary product positive earlier in the window can reappear even if zero at cutoff.")
         st.download_button("Download decline-fit diagnostics CSV", fit_diagnostics.to_csv(index=False).encode("utf-8"),
                            file_name=f"{field}_decline_fit.csv", mime="text/csv")
         production_figure = go.Figure()
@@ -351,9 +360,10 @@ def economics_workspace(field, tables):
                                              mode="lines", line=dict(color=color, dash="dash"))
         production_figure.update_layout(xaxis=dict(title="Year", tickformat="d"), yaxis_title="Annual product volume")
         show_chart(theme.style(production_figure, "History-fitted production forecast",
-                               "Liquids: million Sm³; gas: billion Sm³. Separate exponential fits, not an operator prognosis.",
+                               f"Main phase: {fitted_phase}; other products derived by fixed ratios. Liquids: MSm³; gas: GSm³.",
                                "SODIR history; log-linear fit to last five calendar years", dark=dark, height=420))
-        forecast_description = (f"Product exponential fits to {cutoff - 4}–{cutoff}; {horizon} years; "
+        forecast_description = (f"Main-phase exponential fit ({fitted_phase}) to {cutoff - 4}–{cutoff}; "
+                                f"secondary products from fixed window-total ratios; {horizon} years; "
                                 f"annual CAPEX {capex:g} million NOK, mean of {len(investment_window)} observations")
         forecast["investment_mnok"] = capex
     elif mode == "Import my prognosis":

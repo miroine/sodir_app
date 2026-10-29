@@ -18,9 +18,11 @@ class EconomicsTests(unittest.TestCase):
         })
         forecast, fits = econ.fitted_forecast(production, 2024, 3)
         np.testing.assert_allclose(forecast["oil"], 10 * 0.8 ** np.arange(5, 8))
-        np.testing.assert_allclose(forecast["gas"], 2 * 0.9 ** np.arange(5, 8))
+        ratio = production["gas"].sum() / production["oil"].sum()
+        np.testing.assert_allclose(forecast["gas"], forecast["oil"] * ratio)
         self.assertAlmostEqual(fits.set_index("product").loc["oil", "effective_decline_pct"], 20)
-        self.assertAlmostEqual(fits.set_index("product").loc["gas", "r_squared"], 1)
+        self.assertTrue(pd.isna(fits.set_index("product").loc["gas", "r_squared"]))
+        self.assertAlmostEqual(fits.set_index("product").loc["gas", "ratio_to_main"], ratio)
         # A future point must never leak into the fit.
         with_future = pd.concat([production, pd.DataFrame({"year": [2025], "oil": [100], "gas": [50]})])
         pd.testing.assert_frame_equal(econ.fitted_forecast(with_future, 2024, 3)[0], forecast)
@@ -37,6 +39,31 @@ class EconomicsTests(unittest.TestCase):
         self.assertEqual(mean, 70)
         self.assertEqual(window["year"].tolist(), [2020, 2022, 2023, 2024])
         self.assertEqual(missing, [2021])
+
+    def test_only_main_phase_is_fitted_and_secondary_growth_does_not_block(self):
+        history = pd.DataFrame({"year": range(2020, 2025),
+                                "oil": 10 * 0.8 ** np.arange(5),
+                                "gas": [0, 0.2, 0.4, 0.6, 0.8], "ngl": [0.1] * 5})
+        forecast, fits = econ.fitted_forecast(history, 2024, 3)
+        self.assertEqual(fits["main_phase"].unique().tolist(), ["oil"])
+        np.testing.assert_allclose(forecast["gas"] / forecast["oil"],
+                                   history["gas"].sum() / history["oil"].sum())
+        with self.assertRaisesRegex(ValueError, "gas.*rising|gas.*positive"):
+            econ.fitted_forecast(history, 2024, 3, main_phase="gas")
+        # Gas dominance uses OE, not a 1000x raw gas/liquid unit error.
+        history["gas"] = 20 * 0.9 ** np.arange(5)
+        _, fits = econ.fitted_forecast(history, 2024, 3)
+        self.assertEqual(fits["main_phase"].unique().tolist(), ["gas"])
+        overridden, fits = econ.fitted_forecast(history, 2024, 3, main_phase="oil")
+        np.testing.assert_allclose(overridden["oil"], 10 * 0.8 ** np.arange(5, 8))
+        self.assertEqual(fits["main_phase"].unique().tolist(), ["oil"])
+        # NGL carries 1.9 OE per unit; cutoff-zero secondary follows agreed window ratio.
+        history = pd.DataFrame({"year": [2022, 2023, 2024], "oil": [1, 1, 0], "ngl": [2, 1.8, 1.6]})
+        forecast, fits = econ.fitted_forecast(history, 2024, 2)
+        self.assertEqual(fits["main_phase"].unique().tolist(), ["ngl"])
+        self.assertTrue(forecast["oil"].gt(0).all())
+        with self.assertRaisesRegex(ValueError, "Main phase"):
+            econ.fitted_forecast(history, 2024, 2, main_phase="water")
 
     def test_tax_depreciation_loss_offsets_and_next_year_refund(self):
         data = pd.DataFrame({"year": [2020, 2021], "investment_mnok": [600.0, 0],
@@ -203,6 +230,16 @@ class EconomicsTests(unittest.TestCase):
             app.radio(key="econ_mode").set_value("History-fitted decline").run()
             self.assertEqual(len(app.exception), 0)
             self.assertTrue(any("rising" in item.value for item in app.error))
+            tables["yearly"]["prfPrdGasNetBillSm3"] = [2.0] * 4
+            app.selectbox(key="econ_main_phase").select("gas").run()
+            self.assertEqual(len(app.exception), 0)
+            self.assertEqual(len(app.error), 0)
+            self.assertIn("Main-phase exponential fit (gas)",
+                          app.session_state["economic_scenarios"]["OSEBERG"]["forecast_description"])
+            app.sidebar.radio[0].set_value("Overview").run()
+            app.sidebar.radio[0].set_value("Economics").run()
+            self.assertEqual(app.selectbox(key="econ_main_phase").value, "gas")
+            app.selectbox(key="econ_main_phase").select("auto").run()
             # Replace ramp-up history with a genuine declining tail.
             tables["yearly"]["prfPrdOilNetMillSm3"] = [10, 8, 6.4, 5.12]
             tables["yearly"]["prfPrdGasNetBillSm3"] = [2, 1.8, 1.62, 1.458]

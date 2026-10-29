@@ -11,43 +11,48 @@ from utils.investments import BOE_PER_SM3
 PRODUCTS = ("oil", "gas", "condensate", "ngl")
 
 
-def fitted_forecast(production, cutoff, years):
+def fitted_forecast(production, cutoff, years, main_phase=None):
     history = validate_profile(production.loc[production["year"] <= cutoff])
     if history["year"].max() != cutoff:
         raise ValueError("Production must extend through the cutoff for decline fitting.")
     if not isinstance(years, int) or not 1 <= years <= 100:
         raise ValueError("Forecast horizon must be 1-100 whole years.")
     window = history.loc[history["year"] >= cutoff - 4]
+    if main_phase is not None and main_phase not in PRODUCTS:
+        raise ValueError("Main phase must be oil, gas, condensate or ngl.")
+    if main_phase is None:
+        oe_totals = window[list(PRODUCTS)].sum() * pd.Series(dict(oil=1, gas=1, condensate=1, ngl=1.9))
+        main_phase = oe_totals.idxmax()
+    values = window[main_phase]
+    if len(window) < 3 or values.le(0).any():
+        raise ValueError(f"{main_phase}: main-phase fitting needs at least three positive consecutive annual "
+                         "observations within the last five years. Choose another main phase or import a prognosis.")
+    x = window["year"].to_numpy(dtype=float) - cutoff
+    logged = np.log(values.to_numpy(dtype=float))
+    slope, intercept = np.polyfit(x, logged, 1)
+    if slope > 1e-10:
+        raise ValueError(f"{main_phase}: main-phase history is rising, not declining. "
+                         "Choose another main phase or import a prognosis.")
+    slope = min(float(slope), 0.0)
+    fitted = intercept + slope * x
+    total = float(np.sum((logged - logged.mean()) ** 2))
+    r_squared = 1 - float(np.sum((logged - fitted) ** 2)) / total if total > 1e-20 else None
+    ratios = window[list(PRODUCTS)].sum() / values.sum()
     forecast = pd.DataFrame({"year": cutoff + np.arange(1, years + 1)})
+    main_volumes = np.exp(intercept + slope * (forecast["year"] - cutoff))
     diagnostics = []
     for product in PRODUCTS:
-        values = window[product]
-        row = dict(product=product, first_year=int(window["year"].min()), last_year=cutoff,
-                   observations=len(window), effective_decline_pct=None, r_squared=None,
-                   fitted_cutoff_volume=0.0)
-        if values.eq(0).all() or values.iloc[-1] == 0:
-            forecast[product] = 0.0
-            row["status"] = "No recent production" if values.eq(0).all() else "Zero at cutoff; no restart assumed"
-        else:
-            if len(window) < 3 or values.le(0).any():
-                raise ValueError(f"{product}: need at least three positive consecutive annual observations "
-                                 "within the last five years. Import a prognosis instead.")
-            x = window["year"].to_numpy(dtype=float) - cutoff
-            logged = np.log(values.to_numpy(dtype=float))
-            slope, intercept = np.polyfit(x, logged, 1)
-            if slope > 1e-10:
-                raise ValueError(f"{product}: recent history is rising, not declining. "
-                                 "A decline forecast is not justified; import a prognosis instead.")
-            slope = min(float(slope), 0.0)
-            fitted = intercept + slope * x
-            total = float(np.sum((logged - logged.mean()) ** 2))
-            row.update(status="Fitted exponential", effective_decline_pct=100 * (1 - np.exp(slope)),
-                       fitted_cutoff_volume=float(np.exp(intercept)),
-                       r_squared=1 - float(np.sum((logged - fitted) ** 2)) / total if total > 1e-20 else None)
-            forecast[product] = np.exp(intercept + slope * (forecast["year"] - cutoff))
-        diagnostics.append(row)
-    if forecast[list(PRODUCTS)].to_numpy().sum() <= 0:
-        raise ValueError("No producing product remains at the cutoff; import a prognosis for any restart.")
+        ratio = float(ratios[product])
+        forecast[product] = main_volumes * ratio
+        diagnostics.append(dict(
+            product=product, main_phase=main_phase, first_year=int(window["year"].min()), last_year=cutoff,
+            observations=len(window), ratio_to_main=ratio,
+            ratio_units=f"{'GSm3' if product == 'gas' else 'MSm3'}/{'GSm3' if main_phase == 'gas' else 'MSm3'}",
+            effective_decline_pct=100 * (1 - np.exp(slope)) if ratio > 0 else None,
+            r_squared=r_squared if product == main_phase else None,
+            fitted_cutoff_volume=float(np.exp(intercept) * ratio),
+            status="Fitted main phase" if product == main_phase else "Derived: constant window-total ratio",
+        ))
     return validate_profile(forecast), pd.DataFrame(diagnostics)
 
 
