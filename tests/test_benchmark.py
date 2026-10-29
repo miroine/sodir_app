@@ -20,6 +20,24 @@ def master_tables(current_year=2025):
 
 
 class BenchmarkTests(unittest.TestCase):
+    def test_annual_production_well_axis_uses_integer_ticks_and_hover(self):
+        for counts in ([1, 2, 1], [0, 0, 0], [20, 75, 120]):
+            with self.subTest(counts=counts):
+                annual = pd.DataFrame({
+                    "year": [2021, 2022, 2023],
+                    "oil": [0.25, 0.75, 0.5],
+                    "producers": counts,
+                })
+                fig = figures.yearly_field_figure(annual)
+                self.assertEqual(fig.layout.yaxis2.tickformat, "d")
+                self.assertEqual(fig.layout.yaxis2.tickmode, "linear")
+                self.assertEqual(fig.layout.yaxis2.tick0, 0)
+                self.assertGreaterEqual(fig.layout.yaxis2.dtick, 1)
+                self.assertEqual(fig.layout.yaxis2.dtick % 1, 0)
+                self.assertIn("%{y:.0f}", fig.data[-1].hovertemplate)
+                self.assertEqual(list(fig.data[0].y), [0.25, 0.75, 0.5])
+                self.assertEqual(list(fig.data[-1].y), counts)
+
     def test_unknown_well_years_do_not_distort_timeline_or_producer_counts(self):
         wells = prepare_wells(pd.DataFrame({
             "wlbField": ["TEST"] * 7,

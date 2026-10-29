@@ -25,7 +25,7 @@ python -m pytest -q          # offline extraction, calculation and dashboard reg
 | Wells & reservoir | Development wells by purpose and status, drilling timeline, well list (CSV), formation tops of the field's wells filtered to the extracted producing formations |
 | Reserves | Produced vs remaining vs recoverable gauges; reserve revisions over time |
 | Investments | Annual investments |
-| Economics | Editable scenario prices/FX/OPEX; annual pre-tax cash flow and payback; imported prognosis or illustrative decline with an economic-limit estimate |
+| Economics | History-fitted product decline and recent CAPEX average; pre-/after-tax NPV, oil-price BE and IRR; detailed current-regime tax restatement and imported prognosis |
 | Map | SODIR WMS layers with field boundary, or the official FactMaps viewer |
 | Benchmark | Peer-set analysis (below) |
 | Data & QA | Attribute coverage across fields, extraction audit for the selected field with source text, method notes |
@@ -99,7 +99,7 @@ The source and confidence are shown next to every value. Verify before any decis
 The Economics page requires acknowledgment of assumptions before calculating. Defaults are illustrative.
 Historical product volumes are repriced at fixed user-supplied USD prices and NOK/USD, with user fixed
 and variable OPEX, and source nominal investment. This is a counterfactual screening scenario, **not
-actual historical profitability**. No tax, financing, tariffs, equity allocation or abandonment is modeled;
+actual historical profitability**. No financing, tariffs, equity allocation or abandonment is modeled;
 there is no inflation adjustment in this page. Historical costs must be complete within the modeled
 interval; missing years/invalid volumes are explicit errors. SODIR zeros can be placeholders.
 
@@ -113,20 +113,60 @@ interval; missing years/invalid volumes are explicit errors. SODIR zeros can be 
   balance alone is not payback. Later capital may reverse recovery. No fractional-year interpolation.
 * Discounted cash flow assumes year-end cash flows discounted from the start of the first modeled
   year. NPV and discounted payback use the same user discount rate.
-* No forecast means no cessation estimate. An optional exponential decline applies a user effective
-  annual decline to every product from the cutoff-year mix. It ignores reserve/facilities constraints,
-  new wells and compression; it is **not** an operator/SODIR prognosis.
+* No forecast means no cessation estimate. **History-fitted decline** fits log(volume) against calendar
+  year separately per product using available observations in the last five calendar years through cutoff.
+  At least three consecutive positive annual observations are required for a producing product.
+  Rising or interrupted histories are rejected with an explicit request for a prognosis; zero at cutoff
+  stays zero (no restart). Flat histories give zero decline. Forecasts use the fitted cutoff volume,
+  not a forced match to the final actual point. Diagnostics report effective decline, log-space R²,
+  sample years/count and fitted cutoff volumes, and can be downloaded.
+  This ignores reserve/facilities constraints, new wells and compression; it is **not** an operator prognosis.
 * CSV/XLSX prognosis imports require consecutive whole years immediately after the historical cutoff
   and oil/gas/condensate/ngl product volumes (same units as above). Omitted products mean zero; blanks,
   negatives, nonfinite values, gaps and duplicate years are rejected. Optional `investment_mnok`
-  supplies annual future capital; otherwise the user supplies a fixed annual investment assumption.
+  supplies annual future capital; otherwise the default is the mean of reported investments within
+  cutoff minus four through cutoff, repeated each forecast year. Fitted forecasts use this mean too.
+  Reported zeros and negative revisions are included; missing years are flagged and not zero-filled.
+  Full historical coverage is still required for full-model payback/tax calculations.
 * The first forecast year with operating margin ≤ 0 (or zero production) is the scenario economic limit;
   the preceding year is labelled the last operating year. This assumes no restart and excludes capital
   from the limit test. If the limit is not reached, cessation is **undetermined beyond the horizon**,
   not assumed at the last forecast year. Full forecasts remain untruncated for transparency.
 
+### Current-regime after-tax scenario
+
+The user-approved model applies the **current Norwegian regime to every model year**, including historical
+volumes. It is an unlevered, ring-fenced restatement, **not actual historical tax** or a company tax return.
+Sources: [Norwegianpetroleum tax overview](https://www.norskpetroleum.no/en/economy/petroleum-tax/) and
+[Petroleum Tax Act, section 5](https://lovdata.no/dokument/NL/lov/1975-06-13-35).
+
+* Ordinary tax: **22%**, with six-year straight-line CAPEX depreciation starting in the investment year.
+  Ordinary losses carry forward without interest. Editable opening ordinary losses default to zero;
+  no pre-history depreciable basis is assumed.
+* Special tax: **71.8%** of operating margin less immediate CAPEX deduction and calculated unlevered
+  ordinary tax. Negative calculated ordinary tax is carried forward separately to offset later calculated
+  tax before its deduction in the special base. In this unlevered scenario, its opening balance is assumed
+  to equal 22% of the opening ordinary loss. No land-income offset or financing adjustments are modelled.
+* Positive tax is paid at modelled year-end; negative special tax is refunded the following year.
+  Six tax-only years after the production horizon complete remaining depreciation/refunds. These are not
+  additional production years. Unused ordinary losses have no terminal value. Negative CAPEX revisions
+  reverse deductions on the same six-year/immediate schedules; inspect the exported annual tax ledger.
+* No historical regime changes, legacy/temporary uplift, eligibility rules, company-wide consolidation,
+  exploration/decommissioning inputs, actual norm prices or instalment payment calendar are inferred.
+* NPV is shown for both full history plus forecast (valuation just before the first history year) and
+  forward-only (end of cutoff year). Forward results retain tax balances/refunds generated by history
+  but exclude sunk cash flows. Both use end-year timing and the same discount rate.
+* After-tax IRR is reported only for conventional cash flows with exactly one sign change and a root
+  between -99.99% and 100,000%. All-positive, all-negative or non-conventional flows show an explicit
+  reason instead of a potentially misleading rate.
+* BE is **oil price in USD/bbl giving after-tax NPV zero**, with all other product prices fixed.
+  Full-model BE reprices all oil; forward BE changes future oil only, preserving historical tax balances.
+  Search range is 0–10,000 USD/bbl. No oil, positive NPV already at zero oil price, or no bracketed root
+  produces an explanatory status, not a fabricated break-even value.
+
 The overview shows the last user-calculated scenario, clearly marked as not auto-refreshed.
-Economics exports retain inputs, units in column names, historical/scenario row basis and forecast mode.
+Economics exports retain inputs, tax basis, annual depreciation/loss/tax/refund ledger, units in column
+names, historical/forecast/tax-tail row basis and forecast mode. A separate summary exports both valuations.
 
 ## Benchmark workspace
 
@@ -154,6 +194,21 @@ Economics exports retain inputs, units in column names, historical/scenario row 
   distributions, annual histories and downloadable metric/coverage tables.
 
 ### Map themes and sketch tools
+
+**Field-outline area:** in Overview, enable **Load SODIR field-outline area**; it is also shown
+below the interactive map. The app reads polygon geometry from SODIR's
+[field layer 7100](https://factmaps.sodir.no/api/rest/services/DataService/Data/MapServer/7100),
+the vector outline rather than a map image or bounding rectangle. `pyproj.Geod` calculates
+WGS84 ellipsoidal surface area in km². Esri ring winding subtracts holes; multipart polygon
+areas are summed. Source features are not dissolved, so any overlapping source features
+would be counted more than once. Open lines and point-only locations yield no area.
+Incomplete responses or invalid/unclosed rings are rejected. Geometry/area are cached for
+one day; **Refresh SODIR data** clears the geometry cache. A CSV includes field ID, method,
+source and export timestamp.
+
+This is explicitly a **mapped field-footprint proxy**, not a verified producing reservoir,
+net-pay or drainage area, and does not replace independently sourced reservoir-footprint facts.
+Enabling it is retained while navigating the same field and resets on field change.
 
 The layer menu offers Street (OpenStreetMap), Light, Gray and Dark (CARTO), and Satellite (Esri).
 SODIR WMS overlays and the selected-field boundary remain independent of the basemap.

@@ -21,7 +21,7 @@ from utils.callbaks_figure import (
 )
 from utils.data import DataUnavailable, daily_production, latest_row, load_dataset, number, select_field
 from utils.extract import SECTIONS, facts_table, sections_for_field
-from utils.maps import load_field_geometry, load_map_layers, map_document
+from utils.maps import FIELD_URL, load_field_geometry, load_map_layers, map_document
 from utils.pt import PT_COLUMNS, load_curated, normalise_pt, pt_for_fields
 from utils.reservoir import field_parameters
 
@@ -244,8 +244,28 @@ def remembered_upload(label, *, type, key):
     return uploads.get(key)
 
 
+def show_field_outline_area(field, field_id, geometry):
+    area = geometry.get("outline_area_km2")
+    if area is None:
+        st.info("This geometry has no polygon area: a point or open line cannot define a field footprint.")
+        return
+    st.metric("SODIR field-outline area", f"{area:,.2f} km²")
+    st.caption("WGS84 ellipsoidal polygon area, including islands and subtracting holes. "
+               "This is the mapped field footprint, not measured net reservoir, drainage or producing area. "
+               "Overlapping source features are not dissolved; their net areas are summed.")
+    st.markdown(f"[Source: SODIR field polygon layer]({FIELD_URL.rsplit('/query', 1)[0]})")
+    export = pd.DataFrame([dict(
+        field=field, sodir_field_id=field_id, field_outline_area_km2=area,
+        method="WGS84 ellipsoidal geodesic; net polygon areas summed",
+        source=FIELD_URL, exported_utc=pd.Timestamp.now(tz="UTC").isoformat(),
+        limitation="Mapped field footprint proxy; not measured producing-reservoir or drainage area",
+    )])
+    st.download_button("Download field-outline area CSV", export.to_csv(index=False).encode("utf-8"),
+                       file_name=f"{field}_field_outline_area.csv", mime="text/csv")
+
+
 def economics_workspace(field, tables):
-    st.info("Illustrative pre-tax screening only. Historical volumes are repriced at your constant scenario prices; these are not actual historical profits or official cessation dates.")
+    st.info("Screening scenario, not actual profits, a tax return or official cessation dates. Historical volumes are repriced at constant scenario prices. Current Norwegian tax rules are restated across ALL model years, not reconstructed historical tax.")
     production = bm.yearly_long(tables["yearly"])
     production = production.loc[production["fldName"].eq(field) & production["year"].lt(CURRENT_YEAR)]
     try:
@@ -277,27 +297,69 @@ def economics_workspace(field, tables):
         variable = b.number_input("Variable OPEX · USD/boe", min_value=0.0, value=12.0, key="econ_variable")
         fixed = c.number_input("Fixed OPEX · million NOK/year", min_value=0.0, value=1000.0, key="econ_fixed")
         discount = d.number_input("Annual discount rate · %", min_value=0.0, max_value=100.0, value=8.0, key="econ_discount")
-    st.caption("Defaults are illustrative, not literature-derived. Fixed OPEX applies only in years with positive production; pre-production operating costs are omitted. Nominal historical CAPEX and constant scenario revenues/OPEX are mixed: no inflation adjustment here. No tax, financing, tariffs, abandonment cost or equity allocation.")
-    mode = st.radio("Prognosis basis", ["No forecast", "Illustrative decline scenario", "Import my prognosis"], horizontal=True, key="econ_mode")
+        opening_loss = st.number_input("Opening ordinary tax loss · million NOK", min_value=0.0, value=0.0, key="econ_opening_loss")
+    st.caption("Defaults are illustrative. Fixed OPEX applies only with positive production. Nominal historical CAPEX and constant-price revenues/OPEX are mixed: no inflation adjustment. No financing, tariffs, abandonment cost, norm-price adjustment, company consolidation or equity allocation.")
+    st.markdown(
+        "**Current-regime tax scenario:** 22% corporation tax; CAPEX depreciated over six years including "
+        "the investment year; unused ordinary losses carried forward without interest. Special tax is "
+        "71.8% of operating margin minus immediate CAPEX minus calculated unlevered ordinary tax "
+        "(with negative calculated tax carried forward separately). The opening calculated-negative-tax "
+        "balance is assumed to be 22% of the opening ordinary loss (unlevered case). Special losses are refunded the following year. "
+        "Positive taxes are modelled as paid at year-end. Historical CAPEX revisions reverse deductions "
+        "on the same schedule. No legacy uplift, temporary investment rules or pre-history tax basis. "
+        "Six tax-only years close the depreciation/refund schedule; no terminal value for unused ordinary losses. "
+        "[Rule overview](https://www.norskpetroleum.no/en/economy/petroleum-tax/) · "
+        "[Petroleum Tax Act §5](https://lovdata.no/dokument/NL/lov/1975-06-13-35)."
+    )
+    mode = st.radio("Prognosis basis", ["No forecast", "History-fitted decline", "Import my prognosis"], horizontal=True, key="econ_mode")
     forecast_description = "No forecast"
     forecast = pd.DataFrame()
-    if mode == "Illustrative decline scenario":
-        a, b, c = st.columns(3)
-        decline = a.number_input("Effective annual decline · %", min_value=0.0, max_value=99.0, value=15.0, key="econ_decline")
-        horizon = b.number_input("Forecast horizon · years", min_value=1, max_value=100, value=30, key="econ_horizon")
-        capex = c.number_input("Future annual investment · million NOK", min_value=0.0, value=0.0, key="econ_future_capex")
-        forecast_description = f"Effective annual decline {decline:g}% for {horizon} years; future annual investment {capex:g} million NOK"
-        st.warning("This is an exponential extrapolation from the cutoff-year product mix—not a SODIR/operator prognosis. It ignores new wells, compression, reserves limits and facilities constraints.")
+    if mode != "No forecast":
         try:
-            forecast = econ.decline_forecast(production.loc[production["year"].eq(cutoff)].iloc[0].to_dict(), decline / 100, int(horizon))
+            capex, investment_window, missing_years = econ.recent_investment_average(investments, int(cutoff))
         except ValueError as exc:
             st.error(str(exc))
             return
+        st.caption(f"Default forecast investment: {capex:,.1f} million NOK/year; mean of "
+                   f"{len(investment_window)} reported observations in {cutoff - 4}–{cutoff}, "
+                   "including zeros and negative revisions, with no inflation adjustment.")
+        if missing_years:
+            st.warning("Investment averaging window has missing years (not zero-filled): " + ", ".join(map(str, missing_years)))
+        st.dataframe(investment_window, width="stretch", hide_index=True)
+    if mode == "History-fitted decline":
+        horizon = st.number_input("Forecast horizon · years", min_value=1, max_value=100, value=30, key="econ_horizon")
+        st.warning("Separate log-linear exponential fits use the last five calendar years through cutoff "
+                   "(at least three positive observations per producing product). Rising/interrupted histories "
+                   "require an imported prognosis. No new wells, reserves or facilities constraints; not an operator forecast.")
+        try:
+            forecast, fit_diagnostics = econ.fitted_forecast(production, int(cutoff), int(horizon))
+        except ValueError as exc:
+            st.error(str(exc))
+            return
+        st.dataframe(fit_diagnostics, width="stretch", hide_index=True)
+        st.caption("R² is measured in log-volume space. Forecast starts from the fitted cutoff volume, "
+                   "not necessarily the last observed volume. A cutoff-zero product stays zero; no restart is inferred.")
+        st.download_button("Download decline-fit diagnostics CSV", fit_diagnostics.to_csv(index=False).encode("utf-8"),
+                           file_name=f"{field}_decline_fit.csv", mime="text/csv")
+        production_figure = go.Figure()
+        recent = production.loc[production["year"].between(cutoff - 4, cutoff)]
+        for product, color in zip(econ.PRODUCTS, (theme.NAVY, theme.SKY, theme.STEEL, theme.ACCENT)):
+            if recent[product].gt(0).any():
+                production_figure.add_scatter(x=recent["year"], y=recent[product], name=f"{product.title()} · history",
+                                             mode="lines+markers", line=dict(color=color))
+                production_figure.add_scatter(x=forecast["year"], y=forecast[product], name=f"{product.title()} · fitted forecast",
+                                             mode="lines", line=dict(color=color, dash="dash"))
+        production_figure.update_layout(xaxis=dict(title="Year", tickformat="d"), yaxis_title="Annual product volume")
+        show_chart(theme.style(production_figure, "History-fitted production forecast",
+                               "Liquids: million Sm³; gas: billion Sm³. Separate exponential fits, not an operator prognosis.",
+                               "SODIR history; log-linear fit to last five calendar years", dark=dark, height=420))
+        forecast_description = (f"Product exponential fits to {cutoff - 4}–{cutoff}; {horizon} years; "
+                                f"annual CAPEX {capex:g} million NOK, mean of {len(investment_window)} observations")
         forecast["investment_mnok"] = capex
     elif mode == "Import my prognosis":
         st.caption("CSV/XLSX: consecutive year rows starting immediately after the cutoff; oil/condensate/ngl in million Sm³, gas in billion Sm³. Omitted product columns mean zero; blank cells are invalid. No boe-only imports for product pricing.")
         upload = remembered_upload("Production prognosis", type=["csv", "xlsx"], key=f"econ_prognosis_{field}")
-        template = f"year,oil,gas,condensate,ngl,investment_mnok\n{cutoff + 1},0,1,0.1,0,0\n{cutoff + 2},0,0.8,0.08,0,0\n"
+        template = f"year,oil,gas,condensate,ngl\n{cutoff + 1},0,1,0.1,0\n{cutoff + 2},0,0.8,0.08,0\n"
         st.download_button("Download prognosis template", template.encode("utf-8"), file_name="production_prognosis.csv", mime="text/csv")
         if upload is None:
             st.info("Upload a prognosis to calculate forecast cash flows and the scenario economic limit.")
@@ -309,26 +371,45 @@ def economics_workspace(field, tables):
             st.error(f"Could not read the prognosis: {exc}")
             return
         if "investment_mnok" not in forecast:
-            future_capex = st.number_input("Future annual investment · million NOK", min_value=0.0, value=0.0, key="econ_import_capex")
-            forecast["investment_mnok"] = future_capex
+            forecast["investment_mnok"] = capex
+            forecast_description += f"; annual CAPEX {capex:g} million NOK from recent investment average"
+        else:
+            st.caption("Imported investment_mnok overrides the recent-history average.")
     confirmed = st.checkbox("I understand these are scenario assumptions, not actual profits, and have reviewed the investment coverage and units", key=f"econ_confirm_{field}")
     if not confirmed:
         return
     assumptions = econ.Assumptions(oil, gas, cond, ngl, fx, variable, fixed, discount / 100)
+    tax = econ.TaxAssumptions(opening_loss)
     try:
         history = econ.historical_profile(production, investments, int(cutoff))
-        results, summary = econ.evaluate(history, forecast, assumptions)
+        results, summary = econ.evaluate(history, forecast, assumptions, tax)
     except ValueError as exc:
         st.error(f"Cannot calculate this scenario: {exc}")
         return
     st.session_state.setdefault("economic_scenarios", {})[field] = {
         **summary, "cutoff": int(cutoff), "mode": mode, "forecast_description": forecast_description,
-        "assumptions": vars(assumptions),
+        "assumptions": {**vars(assumptions), **vars(tax)},
     }
     a, b, c = st.columns(3)
-    a.metric("Scenario capital payback year", str(summary["payback_year"]) if summary["payback_year"] else "Not reached")
-    b.metric("Discounted payback year", str(summary["discounted_payback_year"]) if summary["discounted_payback_year"] else "Not reached")
-    c.metric("NPV at first model year · million NOK", fmt(summary["npv_mnok"]))
+    a.metric("Pre-tax capital payback year", str(summary["payback_year"]) if summary["payback_year"] else "Not reached")
+    b.metric("Pre-tax discounted payback year", str(summary["discounted_payback_year"]) if summary["discounted_payback_year"] else "Not reached")
+    c.metric("Pre-tax NPV at first model year · million NOK", fmt(summary["npv_mnok"]))
+    st.subheader("After-tax valuation · current-regime restatement")
+    for label, key in (("Full history + forecast", "full_valuation"), ("Forward-only from cutoff", "forward_valuation")):
+        valuation = summary[key]
+        st.markdown(f"**{label}**")
+        a, b, c, d = st.columns(4)
+        a.metric("Pre-tax NPV · million NOK", fmt(valuation["npv_mnok"]))
+        b.metric("After-tax NPV · million NOK", fmt(valuation["after_tax_npv_mnok"]))
+        c.metric("After-tax IRR", f"{valuation['irr']:.1%}" if valuation["irr"] is not None else "Not defined")
+        price = valuation["break_even_oil_usd_bbl"]
+        d.metric("After-tax BE oil · USD/bbl", f"{price:,.2f}" if price is not None else "Not defined")
+        st.caption(f"IRR: {valuation['irr_status']}. BE: {valuation['break_even_status']}.")
+    st.caption("Full NPV is valued immediately before the first history year; forward NPV at end of cutoff year. "
+               "All cash flows use year-end timing. Forward valuation carries historical tax balances and refunds, "
+               "but excludes sunk cash flows. Forward BE changes forecast oil prices only; full BE reprices all oil. "
+               "Gas, condensate and NGL prices remain fixed. IRR is withheld for non-conventional cash flows "
+               "because a unique rate is not assured. Tax-only tail years are included; no shutdown optimization.")
     if forecast.empty:
         st.info("No prognosis supplied: cessation cannot be estimated from historical production alone.")
     elif summary["economic_limit_year"] is None:
@@ -347,6 +428,8 @@ def economics_workspace(field, tables):
     for column, label, color in (
         ("revenue_mnok", "Revenue", theme.SKY), ("opex_mnok", "OPEX", theme.LIGHT_GREY),
         ("investment_mnok", "Investment", theme.STEEL), ("free_cash_flow_mnok", "Pre-tax free cash flow", theme.ELECTRIC),
+        ("tax_cash_mnok", "Net tax cash paid (negative = refund)", theme.GREY),
+        ("after_tax_cash_flow_mnok", "After-tax free cash flow", theme.ACCENT),
     ):
         figure.add_bar(x=results["year"], y=results[column], name=label, marker_color=color)
     figure.update_layout(barmode="group", xaxis=dict(title="Year", tickformat="d"), yaxis_title="Million NOK")
@@ -354,7 +437,9 @@ def economics_workspace(field, tables):
                            "SODIR volumes/investment; user prices, FX and operating-cost assumptions", dark=dark, height=480))
     figure = go.Figure()
     for column, label in (("cumulative_cash_flow_mnok", "Cumulative cash flow"),
-                          ("cumulative_discounted_mnok", "Cumulative discounted cash flow")):
+                          ("cumulative_discounted_mnok", "Cumulative discounted cash flow"),
+                          ("cumulative_after_tax_mnok", "Cumulative after-tax cash flow"),
+                          ("cumulative_discounted_after_tax_mnok", "Cumulative discounted after-tax cash flow")):
         figure.add_scatter(x=results["year"], y=results[column], name=label, mode="lines")
     figure.add_hline(y=0, line_dash="dot")
     figure.update_layout(xaxis=dict(title="Year", tickformat="d"), yaxis_title="Million NOK")
@@ -362,8 +447,13 @@ def economics_workspace(field, tables):
                            "SODIR volumes/investment; user scenario assumptions, not reported profits", dark=dark, height=420))
     st.caption(f"Historical cutoff: {cutoff}; forecast basis: {mode}. Liquid volumes convert at {inv.BOE_PER_SM3} bbl/Sm³; gas revenue uses 1 GSm³ = 1,000 million Sm³; NGL contributes 1.9 Sm³ o.e./Sm³ to the OPEX denominator.")
     st.dataframe(results.round(3), width="stretch", hide_index=True)
+    valuations = pd.DataFrame([{"period": label, **summary[key]} for label, key in
+                               (("Full history + forecast", "full_valuation"), ("Forward-only", "forward_valuation"))])
+    st.download_button("Download valuation summary CSV", valuations.to_csv(index=False).encode("utf-8"),
+                       file_name=f"{field}_valuation_summary.csv", mime="text/csv")
     export = results.assign(field=field, forecast_basis=mode, forecast_description=forecast_description,
-                            historical_cutoff_year=cutoff, **vars(assumptions))
+                            historical_cutoff_year=cutoff, tax_basis="Current-regime restatement; not actual historical tax",
+                            **vars(assumptions), **vars(tax))
     st.download_button("Download economics scenario CSV", export.to_csv(index=False).encode("utf-8"),
                        file_name=f"{field}_economics_scenario.csv", mime="text/csv")
 
@@ -569,6 +659,18 @@ if section == "Overview":
 
     master, facts, pt, tables = get_master()
     identity, reservoir, wells_rows, volumes = field_fact_rows(selected_field, master, facts, pt)
+    if st.checkbox("Load SODIR field-outline area", key="map_outline_load"):
+        field_id_value = number(latest_row(select_field(overview, selected_field)), "fldNpdidField")
+        if field_id_value is None or field_id_value <= 0 or field_id_value % 1:
+            st.info("No valid SODIR field identifier is available for outline area.")
+        else:
+            try:
+                field_id = int(field_id_value)
+                with st.spinner("Calculating area from SODIR field polygons…"):
+                    geometry = load_field_geometry(field_id)
+                show_field_outline_area(selected_field, field_id, geometry)
+            except DataUnavailable as exc:
+                st.warning(f"Cannot calculate field-outline area: {exc}")
     left, right = st.columns([1.15, 1], gap="large")
     with left:
         st.subheader("Reservoir and recovery")
@@ -618,8 +720,13 @@ if section == "Overview":
         st.write(f"Last calculated scenario: history through {scenario['cutoff']} · {scenario['mode']}.")
         st.caption(scenario.get("forecast_description", scenario["mode"]))
         a, b = st.columns(2)
-        a.metric("Scenario payback year", str(scenario["payback_year"]) if scenario["payback_year"] else "Not reached")
+        a.metric("Pre-tax scenario payback year", str(scenario["payback_year"]) if scenario["payback_year"] else "Not reached")
         b.metric("Scenario last operating year", str(scenario["cessation_year"]) if scenario["cessation_year"] is not None else "Undetermined")
+        if "full_valuation" in scenario:
+            a, b = st.columns(2)
+            a.metric("Full-model after-tax NPV · million NOK", fmt(scenario["full_valuation"]["after_tax_npv_mnok"]))
+            b.metric("Forward after-tax NPV · million NOK", fmt(scenario["forward_valuation"]["after_tax_npv_mnok"]))
+            st.caption("After-tax values use the current-regime restatement, not actual historical taxes.")
         assumptions = scenario["assumptions"]
         st.caption(
             f"Scenario inputs: oil {assumptions['oil_usd_bbl']:g} USD/bbl · gas {assumptions['gas_usd_sm3']:g} USD/Sm³ · "
@@ -777,7 +884,7 @@ elif section == "Investments":
     st.caption("SODIR investment is nominal million NOK, not operating cost. Open Benchmark → Investment cost for peer comparisons, per-boe/per-well measures and user FX/inflation adjustments.")
 
 elif section == "Economics":
-    header("Scenario economics", selected_field.title(), "Editable pre-tax screening: annual cash flow, capital payback and prognosis-based economic limit.")
+    header("Scenario economics", selected_field.title(), "History-fitted forecasts, current-regime after-tax NPV, break-even oil price, IRR and scenario economic limit.")
     master, facts, pt, tables = get_master()
     economics_workspace(selected_field, tables)
 
@@ -808,6 +915,7 @@ elif section == "Map":
                 height=665,
             )
             st.caption("Layers come from SODIR's live WMS catalogue. Accent boundaries / points come from its field geometry service. Only selected overlays request tiles.")
+            show_field_outline_area(selected_field, field_id, geometry)
             st.caption("Map view, basemap and sketches are retained in this browser tab while you navigate; changing the field resets them. Export drawings for a permanent copy. Circle exports use a GeoJSON point with radius_m.")
             rendered = True
         except DataUnavailable as exc:

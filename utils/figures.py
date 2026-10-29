@@ -336,7 +336,13 @@ def yearly_field_figure(yearly_field, dark=False):
             fig.add_bar(x=yearly_field["year"], y=yearly_field[column], name=label, marker_color=color)
     if "producers" in yearly_field and yearly_field["producers"].notna().any():
         fig.add_scatter(x=yearly_field["year"], y=yearly_field["producers"], name="Producing wells (est.)", yaxis="y2",
-                        mode="lines+markers", line=dict(color=theme.ACCENT, width=2), marker=dict(size=5))
-        fig.update_layout(yaxis2=dict(title="Wells", overlaying="y", side="right", showgrid=False))
+                        mode="lines+markers", line=dict(color=theme.ACCENT, width=2), marker=dict(size=5),
+                        hovertemplate="%{x:.0f}<br>Producing wells: %{y:.0f}<extra></extra>")
+        fig.update_layout(yaxis2=dict(
+            title="Wells", overlaying="y", side="right", showgrid=False,
+            tickmode="linear", tick0=0, tickformat="d",
+            dtick=max(1, int(np.ceil(yearly_field["producers"].max() / 8))),
+            rangemode="tozero",
+        ))
     fig.update_layout(barmode="stack", xaxis_title="", yaxis_title="million Sm³ o.e. per year", legend=dict(y=1.02))
     return theme.style(fig, "Annual production by product", "Wells: production wells completed and not yet plugged (SODIR wellbore table)", SOURCE, dark=dark, height=440)

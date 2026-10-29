@@ -7,6 +7,7 @@ from urllib.request import urlopen
 import xml.etree.ElementTree as ET
 
 import streamlit as st
+from pyproj import Geod
 
 from utils.data import DataUnavailable
 
@@ -74,7 +75,12 @@ def parse_field_geometry(payload, field_id):
     features = payload.get("features")
     if not isinstance(features, list):
         raise ValueError("Missing field features.")
+    if payload.get("exceededTransferLimit"):
+        raise ValueError("SODIR field geometry is incomplete (transfer limit exceeded).")
     lines, points = [], []
+    polygon_area_m2 = 0.0
+    has_polygon = False
+    geod = Geod(ellps="WGS84")
     for feature in features:
         if not isinstance(feature, dict):
             continue
@@ -91,15 +97,32 @@ def parse_field_geometry(payload, field_id):
         if not isinstance(geometry, dict):
             continue
         paths = geometry.get("rings", geometry.get("paths", []))
+        if "rings" in geometry and (not isinstance(paths, list) or not paths):
+            raise ValueError("Field polygon rings are missing or invalid.")
+        signed_areas = []
         for path in paths if isinstance(paths, list) else []:
             if isinstance(path, list) and len(path) >= 2 and all(valid_point(point) for point in path):
                 lines.append([[point[1], point[0]] for point in path])
+                if "rings" in geometry:
+                    if len(path) < 4 or path[0][:2] != path[-1][:2]:
+                        raise ValueError("Field polygon rings must be closed with at least four coordinates.")
+                    area, _ = geod.polygon_area_perimeter([point[0] for point in path], [point[1] for point in path])
+                    signed_areas.append(area)
+            elif "rings" in geometry:
+                raise ValueError("Invalid coordinates in field polygon.")
+        if signed_areas:
+            # Esri outer rings and holes have opposite winding; retain signs until holes are removed.
+            area = abs(sum(signed_areas))
+            if not isfinite(area) or area <= 0:
+                raise ValueError("Field polygon has no positive measurable area.")
+            polygon_area_m2 += area
+            has_polygon = True
         point = [geometry.get("x"), geometry.get("y")]
         if valid_point(point):
             points.append([point[1], point[0]])
     if not lines and not points:
         raise ValueError("No valid boundary or location is available for this field.")
-    return dict(lines=lines, points=points)
+    return dict(lines=lines, points=points, outline_area_km2=polygon_area_m2 / 1e6 if has_polygon else None)
 
 
 @st.cache_data(ttl=86400, max_entries=128, show_spinner=False)

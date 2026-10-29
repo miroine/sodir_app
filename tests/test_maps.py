@@ -2,6 +2,7 @@ from io import BytesIO
 import unittest
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlparse
+from pyproj import Geod
 
 from streamlit.testing.v1 import AppTest
 
@@ -27,6 +28,51 @@ def feature(field_id):
 
 
 class MapTests(unittest.TestCase):
+    def test_geodesic_outline_area_subtracts_holes_and_sums_multipart(self):
+        outer = [[3, 60], [3, 61], [4, 61], [4, 60], [3, 60]]
+        hole = [[3.2, 60.2], [3.8, 60.2], [3.8, 60.8], [3.2, 60.8], [3.2, 60.2]]
+        island = [[5, 60], [5, 60.1], [5.1, 60.1], [5.1, 60], [5, 60]]
+        payload = {"features": [{"attributes": {"fldNpdidField": 123},
+                                 "geometry": {"rings": [outer, hole, island]}}]}
+        geod = Geod(ellps="WGS84")
+        areas = [abs(geod.polygon_area_perimeter(*zip(*ring))[0]) for ring in [outer, hole, island]]
+        expected = (areas[0] - areas[1] + areas[2]) / 1e6
+        result = parse_field_geometry(payload, 123)
+        self.assertAlmostEqual(result["outline_area_km2"], expected, places=8)
+        # A one-degree cell at 60 N has roughly half the area of its equatorial counterpart.
+        self.assertGreater(result["outline_area_km2"], 3900)
+        self.assertLess(result["outline_area_km2"], 4100)
+        point = {"features": [{"attributes": {"fldNpdidField": 123}, "geometry": {"x": 3, "y": 60}}]}
+        self.assertIsNone(parse_field_geometry(point, 123)["outline_area_km2"])
+        line = {"features": [{"attributes": {"fldNpdidField": 123}, "geometry": {"paths": [outer]}}]}
+        self.assertIsNone(parse_field_geometry(line, 123)["outline_area_km2"])
+        for rings in ([outer[:-1]], [[[3, 60], [None, 61], [4, 60], [3, 60]]]):
+            payload["features"][0]["geometry"]["rings"] = rings
+            with self.assertRaises(ValueError):
+                parse_field_geometry(payload, 123)
+        payload["exceededTransferLimit"] = True
+        with self.assertRaisesRegex(ValueError, "incomplete"):
+            parse_field_geometry(payload, 123)
+
+    def test_overview_exposes_outline_area_with_explicit_proxy_label(self):
+        tables = datasets()
+        geometry = parse_field_geometry(feature(43625), 43625)
+        with (
+            patch("utils.data.load_dataset", side_effect=lambda name: tables[name]),
+            patch("utils.maps.load_field_geometry", return_value=geometry) as loader,
+            patch("utils.maps.load_map_layers", return_value={"36": "Fields"}),
+        ):
+            app = AppTest.from_file(str(ROOT / "app.py")).run()
+            loader.assert_not_called()
+            app.checkbox(key="map_outline_load").check().run()
+            self.assertEqual(len(app.exception), 0)
+            self.assertTrue(any(m.label == "SODIR field-outline area" and "km²" in m.value for m in app.metric))
+            self.assertTrue(any("not measured net reservoir" in c.value for c in app.caption))
+            self.assertTrue(any("Download field-outline area CSV" in str(b.proto) for b in app.get("download_button")))
+            app.sidebar.radio[0].set_value("Map").run()
+            app.sidebar.radio[0].set_value("Overview").run()
+            self.assertTrue(app.checkbox(key="map_outline_load").value)
+
     def test_map_controls_survive_navigation_and_reset_when_field_changes(self):
         tables = datasets()
         with (
