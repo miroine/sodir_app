@@ -2,6 +2,7 @@
 from html import escape
 import math
 from pathlib import Path
+from uuid import uuid4
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -224,6 +225,25 @@ def peer_insight(master_subset, env, basis, product_label):
     return "; ".join(parts) + "."
 
 
+def clear_retained_upload(key):
+    st.session_state.get("saved_uploads", {}).pop(key, None)
+    st.session_state.pop(key, None)
+    if key == "bm_pt_upload":
+        st.session_state.pop("user_pt", None)
+
+
+def remembered_upload(label, *, type, key):
+    uploads = st.session_state.setdefault("saved_uploads", {})
+    uploaded = st.file_uploader(label, type=type, key=key)
+    if uploaded is not None:
+        uploads[key] = uploaded
+    elif key in uploads:
+        st.caption(f"Retained for this field: {uploads[key].name}")
+    if key in uploads:
+        st.button("Clear retained file", key=f"{key}_clear", on_click=clear_retained_upload, args=(key,))
+    return uploads.get(key)
+
+
 def economics_workspace(field, tables):
     st.info("Illustrative pre-tax screening only. Historical volumes are repriced at your constant scenario prices; these are not actual historical profits or official cessation dates.")
     production = bm.yearly_long(tables["yearly"])
@@ -276,7 +296,7 @@ def economics_workspace(field, tables):
         forecast["investment_mnok"] = capex
     elif mode == "Import my prognosis":
         st.caption("CSV/XLSX: consecutive year rows starting immediately after the cutoff; oil/condensate/ngl in million Sm³, gas in billion Sm³. Omitted product columns mean zero; blank cells are invalid. No boe-only imports for product pricing.")
-        upload = st.file_uploader("Production prognosis", type=["csv", "xlsx"], key=f"econ_prognosis_{field}")
+        upload = remembered_upload("Production prognosis", type=["csv", "xlsx"], key=f"econ_prognosis_{field}")
         template = f"year,oil,gas,condensate,ngl,investment_mnok\n{cutoff + 1},0,1,0.1,0,0\n{cutoff + 2},0,0.8,0.08,0,0\n"
         st.download_button("Download prognosis template", template.encode("utf-8"), file_name="production_prognosis.csv", mime="text/csv")
         if upload is None:
@@ -390,7 +410,8 @@ def investment_workspace(peers, yearly, wells, color_key, color_column, highligh
         p1, p2 = st.columns(2)
         base_year = p1.number_input("Constant-price reference year", min_value=1900, max_value=2200,
                                     value=CURRENT_YEAR - 1, key="cost_base_year")
-        upload = p2.file_uploader("Inflation index CSV (year,index)", type=["csv"], key="cost_index_upload")
+        with p2:
+            upload = remembered_upload("Inflation index CSV (year,index)", type=["csv"], key="cost_index_upload")
         template_years = sorted(set(eligible["year"]) | {int(base_year)})
         template = "year,index\n" + "".join(f"{year},\n" for year in template_years)
         st.download_button("Download inflation index template", template.encode("utf-8"),
@@ -487,6 +508,22 @@ if not fields:
 selected_field = st.sidebar.selectbox(
     "Field", fields, index=fields.index("OSEBERG") if "OSEBERG" in fields else 0, key="field",
 )
+field_changed = st.session_state.get("settings_field") != selected_field
+parameter_prefixes = ("bm_", "cost_", "econ_", "map_", "period_", "tops_")
+upload_keys = {"bm_upload", "bm_pt_upload", "cost_index_upload"}
+for key in list(st.session_state):
+    if key.startswith(parameter_prefixes):
+        if field_changed:
+            del st.session_state[key]
+        elif key not in upload_keys and not key.startswith("econ_prognosis_") and not key.endswith("_clear"):
+            # Re-save keyed values before Streamlit cleans up widgets hidden by navigation.
+            st.session_state[key] = st.session_state[key]
+if field_changed:
+    st.session_state["settings_field"] = selected_field
+    st.session_state["map_state_id"] = uuid4().hex
+    st.session_state.pop("user_pt", None)
+    st.session_state.pop("economic_scenarios", None)
+    st.session_state.pop("saved_uploads", None)
 section = st.sidebar.radio("Explore", SECTION_NAMES, key="section")
 st.sidebar.divider()
 appearance = st.sidebar.selectbox("Appearance", ["Light", "Dark"], key="appearance")
@@ -672,7 +709,7 @@ elif section == "Wells & reservoir":
         st.subheader("Formation tops in development wells")
         wanted = facts.loc[selected_field, "formations"] if selected_field in facts.index else []
         st.caption("Producing formations from the description text: " + (", ".join(wanted) if wanted else "none extracted") + ". Depths are measured depth (MD RKB) from the SODIR formation-top table.")
-        if st.checkbox("Load formation tops for this field's wells (3 MB table)"):
+        if st.checkbox("Load formation tops for this field's wells (3 MB table)", key="tops_load"):
             tops = optional_dataset("tops")
             if not tops.empty:
                 field_tops = tops.loc[tops["wlbName"].isin(field_wells["wlbWellboreName"])].copy()
@@ -684,7 +721,7 @@ elif section == "Wells & reservoir":
                     discovery_well = row.get("discovery_well")
                     discovery_tops = tops.loc[tops["wlbName"].eq(discovery_well)].copy()
                     if not discovery_tops.empty:
-                        if st.checkbox(f"Show discovery-well tops instead ({discovery_well})"):
+                        if st.checkbox(f"Show discovery-well tops instead ({discovery_well})", key="tops_discovery"):
                             field_tops = discovery_tops
                             st.caption(
                                 f"Source well: {discovery_well} (discovery well, not a development well). "
@@ -748,7 +785,7 @@ elif section == "Economics":
 elif section == "Map":
     header("Map", selected_field.title())
     url = field_map_url(selected_field, overview)
-    mode = st.radio("Map mode", ["Layer controls", "Official viewer"], horizontal=True)
+    mode = st.radio("Map mode", ["Layer controls", "Official viewer"], horizontal=True, key="map_mode")
     rendered = False
     if url and mode == "Layer controls":
         try:
@@ -766,11 +803,12 @@ elif section == "Map":
                 format_func=lambda key: f"{catalogue[key]} ({key})", key="map_layers",
             )
             st.iframe(
-                map_document(selected_field, geometry, {key: catalogue[key] for key in selected_layers}, dark=dark),
+                map_document(selected_field, geometry, {key: catalogue[key] for key in selected_layers},
+                             dark=dark, state_id=st.session_state["map_state_id"]),
                 height=665,
             )
             st.caption("Layers come from SODIR's live WMS catalogue. Accent boundaries / points come from its field geometry service. Only selected overlays request tiles.")
-            st.caption("Use the map's layer menu for Street, Light, Gray, Dark or Satellite. Draw lines to measure distance, polygons/rectangles for area, or circles for radius. Export before changing settings; drawings are not persisted. Circle exports use a GeoJSON point with radius_m.")
+            st.caption("Map view, basemap and sketches are retained in this browser tab while you navigate; changing the field resets them. Export drawings for a permanent copy. Circle exports use a GeoJSON point with radius_m.")
             rendered = True
         except DataUnavailable as exc:
             st.warning(f"{exc} Showing the official viewer instead.")
@@ -926,7 +964,7 @@ elif section == "Benchmark":
         st.markdown("Import a production profile (CSV or Excel with a `year` column and any of `oil` [million Sm³], `gas` [billion Sm³], `water`, `wells`) to overlay it on the peer envelope, or generate an average profile from the peer set scaled to your volumes.")
         u1, u2 = st.columns([1, 1])
         with u1:
-            upload = st.file_uploader("Profile file", type=["csv", "xlsx", "xls"], key="bm_upload")
+            upload = remembered_upload("Profile file", type=["csv", "xlsx", "xls"], key="bm_upload")
             template = "year,oil,gas,water,wells\n2030,0.8,0.3,0.0,3\n2031,2.4,0.9,0.1,6\n2032,2.3,0.9,0.4,6\n2033,1.9,0.8,0.9,6\n"
             st.download_button("Download CSV template", template.encode("utf-8"), file_name="profile_template.csv", mime="text/csv")
         with u2:
@@ -971,7 +1009,7 @@ elif section == "Benchmark":
             st.dataframe(table.sort_values("Confidence"), width="stretch", height=360)
         with p2:
             st.download_button("Download curated P/T table", load_curated().to_csv(index=False).encode("utf-8"), file_name="reservoir_pt.csv", mime="text/csv")
-            pt_upload = st.file_uploader("Upload your own P/T table (CSV: field, pressure_bar, temperature_c, …)", type=["csv"], key="bm_pt_upload")
+            pt_upload = remembered_upload("Upload your own P/T table (CSV: field, pressure_bar, temperature_c, …)", type=["csv"], key="bm_pt_upload")
             if pt_upload is not None:
                 try:
                     user_pt = normalise_pt(pd.read_csv(pt_upload))

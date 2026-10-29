@@ -213,13 +213,14 @@ iframe {
 
 [data-testid="stSidebar"] [data-baseweb="select"] > div,
 [data-testid="stSidebar"] [data-baseweb="select"] input {
-    background: #19374A !important;
+    background: #E8F0F6 !important;
 }
 
-[data-testid="stSidebar"] [data-baseweb="select"] div,
-[data-testid="stSidebar"] [data-baseweb="select"] input {
-    color: #F2F5F8 !important;
-    -webkit-text-fill-color: #F2F5F8 !important;
+[data-testid="stSidebar"] [data-baseweb="select"] *,
+[data-testid="stSidebar"] [data-baseweb="select"] input::placeholder {
+    color: #051C2C !important;
+    -webkit-text-fill-color: #051C2C !important;
+    opacity: 1;
 }
 
 .description-card {
@@ -234,7 +235,7 @@ iframe {
 .description-card p { line-height: 1.75; font-size: 0.95rem; margin-bottom: 0.5rem; }
 
 [data-testid="stSidebar"] [data-baseweb="select"] svg {
-    fill: #FFFFFF;
+    fill: #051C2C !important;
 }
 
 [data-testid="stSidebar"] [role="radiogroup"] label {

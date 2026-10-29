@@ -180,6 +180,51 @@ class CalculationTests(unittest.TestCase):
 
 
 class DashboardTests(unittest.TestCase):
+    def test_retained_upload_survives_navigation_can_be_cleared_and_resets_with_field(self):
+        tables = datasets()
+        profile = BytesIO(b"year,oil\n1,1.0\n2,0.8\n")
+        profile.name = "profile.csv"
+        with patch("utils.data.load_dataset", side_effect=lambda name: tables[name]):
+            app = AppTest.from_file(str(ROOT / "app.py")).run()
+            app.session_state["saved_uploads"] = {"bm_upload": profile}
+            app.sidebar.radio[0].set_value("Benchmark").run()
+            self.assertEqual(len(app.exception), 0)
+            self.assertTrue(any("Retained for this field: profile.csv" in item.value for item in app.caption))
+            app.sidebar.radio[0].set_value("Overview").run()
+            app.run()
+            app.sidebar.radio[0].set_value("Benchmark").run()
+            self.assertEqual(len(app.exception), 0)
+            self.assertEqual(app.session_state["saved_uploads"]["bm_upload"].getvalue(), profile.getvalue())
+            app.button(key="bm_upload_clear").click().run()
+            self.assertEqual(len(app.exception), 0)
+            self.assertNotIn("bm_upload", app.session_state["saved_uploads"])
+            app.session_state["saved_uploads"] = {"bm_upload": profile}
+            app.sidebar.selectbox[0].select("EMPTY").run()
+            self.assertEqual(len(app.exception), 0)
+            self.assertEqual(app.session_state["saved_uploads"], {})
+
+    def test_benchmark_parameters_survive_navigation_and_reset_on_field_change(self):
+        tables = datasets()
+        with patch("utils.data.load_dataset", side_effect=lambda name: tables[name]):
+            app = AppTest.from_file(str(ROOT / "app.py")).run()
+            app.sidebar.radio[0].set_value("Benchmark").run()
+            app.selectbox(key="bm_basis").select("Per producing well").run()
+            app.multiselect(key="bm_fm").select("Tarbert").run()
+            app.number_input(key="bm_minyears").set_value(0).run()
+            app.sidebar.radio[0].set_value("Overview").run()
+            app.run()
+            app.sidebar.radio[0].set_value("Benchmark").run()
+            self.assertEqual(len(app.exception), 0)
+            self.assertEqual(app.selectbox(key="bm_basis").value, "Per producing well")
+            self.assertEqual(app.multiselect(key="bm_fm").value, ["Tarbert"])
+            self.assertEqual(app.number_input(key="bm_minyears").value, 0)
+            app.sidebar.radio[0].set_value("Overview").run()
+            app.sidebar.selectbox[0].select("EMPTY").run()
+            app.sidebar.radio[0].set_value("Benchmark").run()
+            self.assertEqual(len(app.exception), 0)
+            self.assertEqual(app.multiselect(key="bm_fm").value, [])
+            self.assertEqual(app.number_input(key="bm_minyears").value, 3)
+
     def test_missing_development_tops_offer_explicit_discovery_well_option(self):
         tables = datasets()
         tables["overview"]["wlbName"] = ["30/9-1", None]

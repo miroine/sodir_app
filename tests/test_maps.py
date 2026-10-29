@@ -27,6 +27,30 @@ def feature(field_id):
 
 
 class MapTests(unittest.TestCase):
+    def test_map_controls_survive_navigation_and_reset_when_field_changes(self):
+        tables = datasets()
+        with (
+            patch("utils.data.load_dataset", side_effect=lambda name: tables[name]),
+            patch("utils.maps.load_map_layers", return_value={"36": "Fields", "61": "Facilities"}),
+            patch("utils.maps.load_field_geometry", return_value=parse_field_geometry(feature(43625), 43625)),
+        ):
+            app = AppTest.from_file(str(ROOT / "app.py")).run()
+            app.sidebar.radio[0].set_value("Map").run()
+            state_id = app.session_state["map_state_id"]
+            self.assertIn(f'"state_id": "{state_id}"', app.get("iframe")[0].proto.srcdoc)
+            app.multiselect(key="map_layers").set_value(["61"]).run()
+            app.radio(key="map_mode").set_value("Official viewer").run()
+            app.sidebar.radio[0].set_value("Overview").run()
+            app.run()
+            app.sidebar.radio[0].set_value("Map").run()
+            self.assertEqual(app.radio(key="map_mode").value, "Official viewer")
+            app.radio(key="map_mode").set_value("Layer controls").run()
+            self.assertEqual(app.multiselect(key="map_layers").value, ["61"])
+            self.assertEqual(app.session_state["map_state_id"], state_id)
+            app.sidebar.selectbox[0].select("EMPTY").run()
+            self.assertEqual(app.multiselect(key="map_layers").value, ["36"])
+            self.assertNotEqual(app.session_state["map_state_id"], state_id)
+
     def tearDown(self):
         load_map_layers.clear()
         load_field_geometry.clear()
@@ -116,7 +140,7 @@ class MapTests(unittest.TestCase):
             app.sidebar.selectbox[0].select("EMPTY").run()
             self.assertEqual(len(app.exception), 0)
             self.assertEqual(geometry.call_args.args[0], 999)
-            self.assertEqual(app.multiselect[0].value, ["61"])
+            self.assertEqual(app.multiselect[0].value, ["36"])
             self.assertIn('"field": "EMPTY"', app.get("iframe")[0].proto.srcdoc)
 
     def test_dashboard_falls_back_to_official_viewer(self):

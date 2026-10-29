@@ -117,12 +117,12 @@ def load_field_geometry(field_id):
         raise DataUnavailable("Selected-field geometry is temporarily unavailable.") from exc
 
 
-def map_document(selected_field, geometry, layers, dark=False):
+def map_document(selected_field, geometry, layers, dark=False, state_id=None):
     payload = json.dumps(
         dict(
             field=selected_field, geometry=geometry, wms=WMS_URL,
             layers=[dict(name=name, title=escape(title)) for name, title in layers.items()],
-            dark=dark,
+            dark=dark, state_id=state_id,
         ),
         allow_nan=False,
     ).replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")

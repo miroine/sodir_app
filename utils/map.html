@@ -42,6 +42,16 @@
       status.textContent = "Map library unavailable. Use the official FactMaps link.";
     } else {
       try {
+        const storageKey = "sodir-map-state";
+        let saved = null;
+        let storageError = "";
+        try {
+          const previous = JSON.parse(sessionStorage.getItem(storageKey) || "null");
+          if (data.state_id && previous && previous.id === data.state_id) saved = previous;
+          else sessionStorage.removeItem(storageKey);
+        } catch (error) {
+          storageError = " Browser storage is unavailable; map settings cannot be retained. Export sketches before leaving.";
+        }
         const map = L.map("map", {scrollWheelZoom: false}).setView([64, 5], 5);
         const osmCredit = '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>';
         const cartoCredit = osmCredit + ' © <a href="https://carto.com/attributions">CARTO</a>';
@@ -62,7 +72,7 @@
             maxZoom: 18, attribution: "Tiles © Esri — Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community",
           }),
         };
-        basemaps[data.dark ? "Dark" : "Light"].addTo(map);
+        basemaps[saved && basemaps[saved.basemap] ? saved.basemap : (data.dark ? "Dark" : "Light")].addTo(map);
         const reportError = () => {
           status.textContent = "Some map tiles are unavailable. Field boundaries remain visible; try the official FactMaps link.";
         };
@@ -88,6 +98,34 @@
         overlays["Selected field boundary / location"] = selected;
         const drawings = L.featureGroup().addTo(map);
         overlays["Your drawings"] = drawings;
+        const drawingFeatures = () => {
+          const features = [];
+          drawings.eachLayer((layer) => {
+            const feature = layer.toGeoJSON();
+            feature.properties = {
+              field: data.field,
+              shape: layer instanceof L.Circle ? "circle" : layer instanceof L.Rectangle ? "rectangle" : "geometry",
+              ...(layer instanceof L.Circle ? {radius_m: layer.getRadius()} : {}),
+            };
+            features.push(feature);
+          });
+          return features;
+        };
+        const saveState = () => {
+          if (!data.state_id) return;
+          try {
+            const center = map.getCenter();
+            sessionStorage.setItem(storageKey, JSON.stringify({
+              id: data.state_id, center: [center.lat, center.lng], zoom: map.getZoom(),
+              basemap: Object.keys(basemaps).find((key) => map.hasLayer(basemaps[key])),
+              overlays: Object.fromEntries(Object.entries(overlays).map(([key, layer]) => [key, map.hasLayer(layer)])),
+              features: drawingFeatures(),
+            }));
+          } catch (error) {
+            storageError = " Browser storage is unavailable; map settings cannot be retained. Export sketches before leaving.";
+            status.textContent = storageError;
+          }
+        };
         L.control.layers(basemaps, overlays).addTo(map);
         L.control.scale({imperial: false}).addTo(map);
         const drawingAvailable = L.Control.Draw && L.GeometryUtil;
@@ -128,6 +166,23 @@
             if (layer.getPopup()) layer.setPopupContent(label);
             else layer.bindPopup(label);
           };
+          if (saved && saved.features) {
+            saved.features.forEach((feature) => {
+              let layer;
+              if (feature.properties.shape === "circle") {
+                const point = feature.geometry.coordinates;
+                layer = L.circle([point[1], point[0]], {radius: feature.properties.radius_m});
+              } else if (feature.properties.shape === "rectangle") {
+                const points = feature.geometry.coordinates[0].map((point) => [point[1], point[0]]);
+                layer = L.rectangle(L.latLngBounds(points));
+              } else {
+                layer = L.geoJSON(feature).getLayers()[0];
+              }
+              drawings.addLayer(layer);
+              updateMeasurement(layer);
+            });
+            exportButton.disabled = drawings.getLayers().length === 0;
+          }
           map.addControl(new L.Control.Draw({
             position: "topleft",
             edit: {featureGroup: drawings},
@@ -143,9 +198,16 @@
             drawings.addLayer(event.layer);
             updateMeasurement(event.layer);
             exportButton.disabled = false;
+            saveState();
           });
-          map.on(L.Draw.Event.EDITED, (event) => event.layers.eachLayer(updateMeasurement));
-          map.on(L.Draw.Event.DELETED, () => { exportButton.disabled = drawings.getLayers().length === 0; });
+          map.on(L.Draw.Event.EDITED, (event) => {
+            event.layers.eachLayer(updateMeasurement);
+            saveState();
+          });
+          map.on(L.Draw.Event.DELETED, () => {
+            exportButton.disabled = drawings.getLayers().length === 0;
+            saveState();
+          });
           exportButton.onclick = () => {
             const collection = {type: "FeatureCollection", features: []};
             drawings.eachLayer((layer) => {
@@ -162,7 +224,15 @@
           };
         }
         const bounds = selected.getBounds();
-        if (bounds.isValid()) map.fitBounds(bounds, {padding: [45, 45], maxZoom: 11});
+        if (saved && saved.center) map.setView(saved.center, saved.zoom);
+        else if (bounds.isValid()) map.fitBounds(bounds, {padding: [45, 45], maxZoom: 11});
+        if (saved && saved.overlays) {
+          Object.entries(overlays).forEach(([key, layer]) => {
+            if (saved.overlays[key] === false) map.removeLayer(layer);
+          });
+        }
+        map.on("moveend baselayerchange overlayadd overlayremove", saveState);
+        saveState();
         const home = L.control({position: "topleft"});
         home.onAdd = () => {
           const button = L.DomUtil.create("button", "leaflet-bar");
@@ -175,8 +245,8 @@
         };
         home.addTo(map);
         status.textContent = drawingAvailable
-          ? "Selected field highlighted in amber. Choose a basemap in the layer menu. Measurements are approximate, not for navigation. Export drawings before changing field, overlays or page: they are not saved."
-          : "Map loaded, but drawing tools are unavailable. Reload to retry the drawing library.";
+          ? "Selected field highlighted in amber. Measurements are approximate, not for navigation. Map settings and sketches are kept in this browser tab until the field changes. Export for a permanent copy." + storageError
+          : "Map loaded, but drawing tools are unavailable. Reload to retry the drawing library." + storageError;
       } catch (error) {
         status.textContent = "Unable to render this map. Use the official FactMaps link.";
       }

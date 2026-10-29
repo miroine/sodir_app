@@ -162,9 +162,18 @@ great-circle segment distances; polygons/rectangles show approximate geodesic ar
 radius and approximate planar area. A metric scale is included. These are screening tools, not
 survey/navigation measurements.
 
-Export drawings as GeoJSON before switching field, overlays or page: iframe redraws discard sketches.
+Benchmark filters, numerical parameters, map mode/overlay selections, production periods and uploaded
+profiles/indices are retained while navigating sections in the current Streamlit session. Changing
+the field resets these settings and retained uploads to defaults (appearance is unchanged).
+Retained uploads can be removed with **Clear retained file**.
+
+The map retains its basemap, zoom/centre, layer visibility and editable sketches in browser-tab
+session storage across section/overlay changes. Changing the field generates a new state ID and
+resets the map, including when returning to a previously selected field. A new app session or closed
+browser tab does not preserve this state. If browser storage is blocked, the map displays a warning.
+Export drawings as GeoJSON for a permanent copy or before changing the field.
 GeoJSON circles are represented as centre points with `shape`, `radius_m` and `area_m2` properties.
-Measurements update after edits; drawings and measurements are not uploaded or saved by the app.
+Measurements update after edits; sketches remain in browser-tab storage and are not uploaded.
 Basemap tiles and Leaflet/Leaflet.draw assets require internet access; errors are displayed if unavailable.
 
 ### Investment methodology and adjustments
