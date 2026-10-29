@@ -105,7 +105,7 @@ class MapTests(unittest.TestCase):
             self.assertEqual(geometry.call_args.args[0], 43625)
             self.assertIn('"field": "OSEBERG"', app.get("iframe")[0].proto.srcdoc)
             app.multiselect[0].set_value(["61"]).run()
-            app.sidebar.selectbox[1].select("EMPTY").run()
+            app.sidebar.selectbox[0].select("EMPTY").run()
             self.assertEqual(len(app.exception), 0)
             self.assertEqual(geometry.call_args.args[0], 999)
             self.assertEqual(app.multiselect[0].value, ["61"])

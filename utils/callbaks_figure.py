@@ -12,13 +12,14 @@ from utils.data import (
     prepare_monthly,
     select_field,
 )
+from utils.theme import ACCENT, ELECTRIC, ICE, NAVY, SKY, STEEL
 
 
 def fig_plot_oil(df_selection, rates=None):
     data = prepare_monthly(df_selection)
     rates = daily_production(data) if rates is None else rates
     fig = go.Figure()
-    for label, color in (("Oil", "#0f9d82"), ("NGL", "#e6a23c")):
+    for label, color in (("Oil", NAVY), ("NGL", SKY)):
         fig.add_scatter(
             x=rates.index, y=rates[f"{label} [Sm³/d]"],
             name=label, mode="lines", stackgroup="liquids", line_color=color,
@@ -27,7 +28,7 @@ def fig_plot_oil(df_selection, rates=None):
     fig.add_scatter(
         x=data.index,
         y=data["prfPrdProducedWaterInFieldMillSm3"].div(total.where(total > 0)),
-        name="Water cut", mode="lines", yaxis="y2", line_color="#5b8def",
+        name="Water cut", mode="lines", yaxis="y2", line=dict(color=ACCENT, width=1.8, dash="dot"),
     )
     fig.update_layout(
         title="Liquid production", yaxis_title="Sm³/day",
@@ -45,11 +46,11 @@ def fig_plot_gas(df_selection, rates=None):
     fig = go.Figure()
     fig.add_scatter(
         x=rates.index, y=rates["Gas [million Sm³/d]"],
-        name="Gas", mode="lines", fill="tozeroy", line_color="#5b8def",
+        name="Gas", mode="lines", fill="tozeroy", line_color=ELECTRIC, fillcolor="rgba(34,81,255,0.12)",
     )
     fig.add_scatter(
         x=rates.index, y=rates["Condensate [Sm³/d]"],
-        name="Condensate", mode="lines", yaxis="y2", line_color="#d575ad",
+        name="Condensate", mode="lines", yaxis="y2", line_color=STEEL,
     )
     fig.update_layout(
         title="Gas & condensate production", yaxis_title="Gas · million Sm³/day",
@@ -147,12 +148,12 @@ def reserve_figure(selected_field, product, reserves=None, inplace=None, product
         mode="gauge+number", value=produced,
         title=dict(text=f"{product} produced · {unit}"),
         gauge=dict(
-            axis=dict(range=[0, upper]), bar=dict(color="#0f9d82"),
+            axis=dict(range=[0, upper]), bar=dict(color=NAVY),
             steps=[
-                dict(range=[0, produced], color="#0f9d82"),
-                dict(range=[produced, produced + remaining], color="#8ad8c7"),
+                dict(range=[0, produced], color=NAVY),
+                dict(range=[produced, produced + remaining], color=ICE),
             ],
-            threshold=dict(line=dict(color="#e6a23c", width=3), value=recoverable),
+            threshold=dict(line=dict(color=ACCENT, width=3), value=recoverable),
         ),
     ))
     fig.update_layout(height=300, margin=dict(l=35, r=35, t=65, b=20))
@@ -191,7 +192,8 @@ def callback_investments(selected_field, investments=None):
     if data.empty:
         return None
     fig = go.Figure(go.Bar(
-        x=data["prfYear"], y=data["prfInvestmentsMillNOK"], marker_color="#5b8def",
+        x=data["prfYear"], y=data["prfInvestmentsMillNOK"], marker_color=NAVY,
     ))
     fig.update_layout(title="Annual investments", yaxis_title="Million NOK", xaxis_title="Year")
     return fig
+

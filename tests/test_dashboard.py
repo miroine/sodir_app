@@ -27,6 +27,9 @@ def datasets():
         "fldName": ["OSEBERG", "EMPTY"],
         "fldNpdidField": [43625, 999],
         "fldCurrentActivitySatus": ["Producing", "Discovery"],
+        "fldHcType": ["OIL/GAS", "OIL"],
+        "fldMainArea": ["North sea", "North sea"],
+        "cmpLongName": ["Equinor Energy AS", None],
     })
     monthly = data.prepare_monthly(pd.DataFrame({
         "prfInformationCarrier": ["OSEBERG", "OSEBERG"],
@@ -38,6 +41,29 @@ def datasets():
         "prfPrdOeNetMillSm3": [31.031, 29.029],
         "prfPrdProducedWaterInFieldMillSm3": [0.0, 0.0],
     }))
+    yearly = data.prepare_yearly(pd.DataFrame({
+        "prfInformationCarrier": ["OSEBERG"] * 4,
+        "prfYear": [2021, 2022, 2023, 2024],
+        "prfPrdOilNetMillSm3": [5.0, 10.0, 8.0, 6.0],
+        "prfPrdGasNetBillSm3": [1.0, 2.0, 2.0, 2.0],
+        "prfPrdNGLNetMillSm3": [0.0] * 4,
+        "prfPrdCondensateNetMillSm3": [0.0] * 4,
+        "prfPrdOeNetMillSm3": [6.0, 12.0, 10.0, 8.0],
+        "prfPrdProducedWaterInFieldMillSm3": [0.5, 2.0, 4.0, 6.0],
+    }))
+    wells = data.prepare_wells(pd.DataFrame({
+        "wlbWellboreName": ["30/9-B-1 H", "30/9-B-2 H", "30/9-B-3 H", "30/9-B-4 H"],
+        "wlbField": ["OSEBERG"] * 4,
+        "wlbPurpose": ["PRODUCTION", "PRODUCTION", "INJECTION", "OBSERVATION"],
+        "wlbStatus": ["PRODUCING", "PLUGGED", "INJECTING", "PLUGGED"],
+        "wlbContent": ["OIL", "OIL", "WATER", "NOT APPLICABLE"],
+        "wlbCompletionYear": [2021, 2021, 2022, 2020],
+        "wlbPluggedDate": [None, "15.06.2023", None, "01.01.2021"],
+        "wlbTotalDepth": [4000, 4200, 3900, 3000],
+        "wlbFinalVerticalDepth": [2600, 2650, 2580, 2500],
+        "wlbSubSea": ["YES", " NO", " NO", " NO"],
+        "wlbMultilateral": ["NO", "YES", "NO", "NO"],
+    }))
     inplace = pd.DataFrame({
         "fldName": ["OSEBERG"], "fldInplaceOil": [100.0],
         "fldInplaceFreeGas": [0.2], "fldInplaceAssGas": [0.1],
@@ -45,15 +71,23 @@ def datasets():
     reserves = pd.DataFrame({
         "fldName": ["OSEBERG"], "fldRemainingOil": [10.0],
         "fldRecoverableOil": [70.0], "fldRemainingGas": [0.04],
-        "fldRecoverableGas": [0.1],
+        "fldRecoverableGas": [0.1], "fldRecoverableOE": [70.1], "fldRemainingOE": [10.04],
+    })
+    description = pd.DataFrame({
+        "fldName": ["OSEBERG"] * 3,
+        "fldDescriptionHeading": ["Development", "Reservoir", "Recovery strategy"],
+        "fldDescriptionText": [
+            "Oseberg is a field in the northern part of the North Sea. The water depth is 100 metres. "
+            "Oseberg was discovered in 1979, and the plan for development and operation (PDO) was approved in 1984. "
+            "The production started in 1988. A subsea template tied-back to Oseberg B.",
+            "Oseberg produces oil and gas from sandstone of Middle Jurassic age in the Brent Group. The main reservoirs "
+            "are in the Oseberg and Tarbert Formations. The reservoirs are at depths of 2300-2700 metres and have generally good quality.",
+            "The Oseberg field is produced by pressure depletion, as well as pressure maintenance using gas and water injection.",
+        ],
     })
     return dict(
-        overview=overview, monthly=monthly, inplace=inplace, reserves=reserves,
-        description=pd.DataFrame({
-            "fldName": ["OSEBERG"], "fldDescriptionHeading": [None],
-            "fldDescriptionText": [None],
-        }),
-        investments=pd.DataFrame(),
+        overview=overview, monthly=monthly, yearly=yearly, wells=wells, inplace=inplace, reserves=reserves,
+        description=description, investments=pd.DataFrame(), tops=pd.DataFrame(),
     )
 
 
@@ -116,7 +150,7 @@ class CalculationTests(unittest.TestCase):
                 second = data.load_dataset("overview")
                 self.assertEqual(second.loc[0, "fldName"], "OSEBERG")
                 request.assert_called_once()
-                self.assertEqual(request.call_args.kwargs["timeout"], 20)
+                self.assertEqual(request.call_args.kwargs["timeout"], 45)
             data.load_dataset.clear()
             with patch("utils.data.urlopen", side_effect=[
                 TimeoutError(), BytesIO(b"fldName\nOSEBERG\n"),
@@ -150,14 +184,14 @@ class DashboardTests(unittest.TestCase):
         tables = datasets()
         with patch("utils.data.load_dataset", side_effect=lambda name: tables[name]):
             app = AppTest.from_file(str(ROOT / "app.py")).run()
-            app.sidebar.selectbox[2].select("Dark").run()
+            app.sidebar.selectbox[1].select("Dark").run()
             app.sidebar.radio[0].set_value("Production").run()
             self.assertEqual(len(app.exception), 0)
             month = tables["monthly"].index[0]
             app.select_slider[0].set_value((month, month)).run()
             self.assertEqual(len(app.exception), 0)
             self.assertEqual(len(app.dataframe[0].value), 1)
-            app.sidebar.selectbox[2].select("Light").run()
+            app.sidebar.selectbox[1].select("Light").run()
             self.assertEqual(len(app.exception), 0)
         tables["monthly"] = tables["monthly"].iloc[:1]
         with patch("utils.data.load_dataset", side_effect=lambda name: tables[name]):
@@ -174,7 +208,7 @@ class DashboardTests(unittest.TestCase):
             app.run()
             self.assertEqual(len(app.exception), 0)
             self.assertTrue(any("2024-01-01" in warning.value for warning in app.warning))
-            self.assertEqual(app.title[0].value, "OSEBERG")
+            self.assertEqual(app.title[0].value, "Oseberg")
             count = loader.call_count
             app.run()
             self.assertEqual(loader.call_count, count)
@@ -182,33 +216,68 @@ class DashboardTests(unittest.TestCase):
             self.assertGreater(loader.call_count, count)
             self.assertEqual(len(app.exception), 0)
 
-    def test_sections_switching_missing_data_and_lazy_loading(self):
+    def test_overview_shows_extracted_facts_and_descriptions(self):
+        tables = datasets()
+        with patch("utils.data.load_dataset", side_effect=lambda name: tables[name]):
+            app = AppTest.from_file(str(ROOT / "app.py")).run()
+            self.assertEqual(len(app.exception), 0)
+            self.assertEqual(app.title[0].value, "Oseberg")
+            html = " ".join(block.value for block in app.markdown)
+            self.assertIn("Water &amp; gas injection", html)
+            self.assertIn("Tarbert", html)
+            self.assertIn("2,300–2,700 m", html)
+            self.assertIn("2 drilled · 1 active", html)
+            self.assertIn("oil 70%", html)
+            self.assertEqual(len(app.expander), 5)
+            app.sidebar.selectbox[0].select("EMPTY").run()
+            self.assertEqual(len(app.exception), 0)
+            self.assertTrue(all(metric.value == "—" for metric in app.metric))
+
+    def test_sections_switching_and_missing_data(self):
         tables = datasets()
         with patch("utils.data.load_dataset", side_effect=lambda name: tables[name]) as loader:
             app = AppTest.from_file(str(ROOT / "app.py")).run()
             self.assertEqual(len(app.exception), 0)
-            self.assertEqual(app.title[0].value, "OSEBERG")
-            self.assertNotIn("description", [call.args[0] for call in loader.call_args_list])
-            self.assertNotIn("reserves", [call.args[0] for call in loader.call_args_list])
-            frames = app.get("iframe")
-            self.assertIn("npdid=43625", frames[0].proto.src)
-            app.sidebar.selectbox[1].select("EMPTY").run()
-            self.assertEqual(len(app.exception), 0)
-            self.assertIn("npdid=999", app.get("iframe")[0].proto.src)
-            self.assertTrue(all(metric.value == "—" for metric in app.metric))
-            for section in ("Production", "Reserves", "Investments"):
+            self.assertNotIn("tops", [call.args[0] for call in loader.call_args_list])
+            app.sidebar.selectbox[0].select("EMPTY").run()
+            for section in ("Production", "Reserves", "Investments", "Wells & reservoir"):
                 app.sidebar.radio[0].set_value(section).run()
-                self.assertEqual(len(app.exception), 0)
-                self.assertGreater(len(app.info), 0)
-            app.sidebar.selectbox[1].select("OSEBERG").run()
-            for section in ("Production", "Reserves"):
-                app.sidebar.radio[0].set_value(section).run()
-                self.assertEqual(len(app.exception), 0)
-                self.assertEqual(len(app.get("plotly_chart")), 2)
-            app.sidebar.radio[0].set_value("Overview").run()
-            app.checkbox[0].check().run()
+                self.assertEqual(len(app.exception), 0, section)
+                self.assertGreater(len(app.info), 0, section)
+            app.sidebar.selectbox[0].select("OSEBERG").run()
+            app.sidebar.radio[0].set_value("Production").run()
             self.assertEqual(len(app.exception), 0)
-            self.assertEqual(len(app.expander), 5)
+            self.assertEqual(len(app.get("plotly_chart")), 5)
+            app.sidebar.radio[0].set_value("Reserves").run()
+            self.assertEqual(len(app.exception), 0)
+            self.assertEqual(len(app.get("plotly_chart")), 2)
+            app.sidebar.radio[0].set_value("Wells & reservoir").run()
+            self.assertEqual(len(app.exception), 0)
+            self.assertEqual(app.metric[0].value, "2")
+            self.assertEqual(app.metric[1].value, "1")
+            self.assertEqual(len(app.dataframe), 2)
+            app.sidebar.radio[0].set_value("Data & QA").run()
+            self.assertEqual(len(app.exception), 0)
+
+    def test_benchmark_section_renders_all_tabs_and_filters(self):
+        tables = datasets()
+        with patch("utils.data.load_dataset", side_effect=lambda name: tables[name]):
+            app = AppTest.from_file(str(ROOT / "app.py")).run()
+            app.sidebar.radio[0].set_value("Benchmark").run()
+            self.assertEqual(len(app.exception), 0)
+            self.assertGreaterEqual(len(app.get("plotly_chart")), 10)
+            app.number_input(key="bm_minyears").set_value(0).run()
+            for basis in ("Annual volume", "Per producing well", "% of in-place volume"):
+                app.selectbox(key="bm_basis").select(basis).run()
+                self.assertEqual(len(app.exception), 0, basis)
+            app.selectbox(key="bm_color").select("Main formation").run()
+            app.multiselect(key="bm_fm").select("Tarbert").run()
+            self.assertEqual(len(app.exception), 0)
+            lede = " ".join(block.value for block in app.markdown)
+            self.assertIn("1 peer fields", lede)
+            app.multiselect(key="bm_hc").select("OIL").run()
+            self.assertEqual(len(app.exception), 0)
+            self.assertIn("No fields match", " ".join(block.value for block in app.markdown))
 
     def test_service_failure_is_visible(self):
         with patch("utils.data.load_dataset", side_effect=data.DataUnavailable("Service unavailable")):
@@ -216,7 +285,7 @@ class DashboardTests(unittest.TestCase):
             self.assertEqual(len(app.exception), 0)
             self.assertEqual(app.error[0].value, "Service unavailable")
 
-    def test_missing_production_does_not_disable_map(self):
+    def test_missing_production_does_not_disable_overview(self):
         tables = datasets()
 
         def load(name):
@@ -228,8 +297,8 @@ class DashboardTests(unittest.TestCase):
             app = AppTest.from_file(str(ROOT / "app.py")).run()
             self.assertEqual(len(app.exception), 0)
             self.assertEqual(app.warning[0].value, "Production unavailable")
-            self.assertIn("npdid=43625", app.get("iframe")[0].proto.src)
             self.assertTrue(all(metric.value == "—" for metric in app.metric))
+            self.assertIn("2 drilled · 1 active", " ".join(block.value for block in app.markdown))
 
 
 if __name__ == "__main__":
