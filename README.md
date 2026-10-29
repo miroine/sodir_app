@@ -94,6 +94,48 @@ SODIR has no P/T table; descriptions only flag HPHT. Values come from, in order:
 
 The source and confidence are shown next to every value. Verify before any decision use.
 
+### Combined reservoir and fluid observations
+
+Overview combines, without overwriting conflicting observations:
+
+* SODIR field hydrocarbon classification and rule-extracted description facts (formation, depth,
+  lithology, thickness, footprint, stated pressure/temperature, HPHT and drainage strategy).
+  Explicit porosity (%), permeability (mD), viscosity (cP) and density (kg/m3) clauses are extracted
+  only when a number and unit accompany the parameter; qualitative quality is not converted to numbers.
+* Registered source-linked literature observations (currently the Kvitebjørn review only).
+* The existing P/T table and any P/T upload loaded in Benchmark. Legacy seed values without
+  checked sources and indexed excerpts remain provisional/unverified, not upgraded to measurements.
+* Optional development-well formation intervals, joined by exact wellbore name and labelled MD RKB,
+  not net pay or producing thickness. No discovery-well relationship is inferred.
+* The selected field's geodesic outline proxy, if loaded above, distinct from reservoir area.
+* User CSV/XLSX observations, preserving field, well, reservoir, units, conditions and report locator.
+
+**Source-backed** means source-traceable, not necessarily independently measured or reviewed.
+These observations and **user-supplied** observations are visible by default. Separate checkboxes
+include **provisional/unverified** records and **depth-based estimates**; downloads respect those
+filters. User-supplied records are never relabelled as independently verified. Estimates are
+generated separately from raw P/T observations, so mixed measured/estimated provenance is not hidden.
+No averaging or automatic unit conversion is performed on conflicting observations.
+
+The view reports per-field source coverage and remaining numeric reservoir/PVT gaps. The optional
+**all-field source inventory** reports observation/field counts and downloads combined records
+across the field list. It does not bulk-fetch outline geometry or external files. Optional formation-top
+data are included only after loading; missing data are not interpreted as absent reservoirs.
+
+For uploads, download the long-format template and replace its illustrative row with your observations.
+Required columns: `field,parameter,value_min,unit,reservoir,conditions,source_title,source_url,source_locator`.
+Optional columns include `value_max,evidence_url,reviewed_date,well`. Field names must match the SODIR
+field list (case/outer whitespace normalized); unmatched fields, blank provenance, invalid HTTPS links
+and nonfinite/reversed numeric ranges are rejected explicitly. Text observations are supported.
+Files are retained in the current Streamlit session until cleared or the selected field changes.
+
+[Diskos](https://www.sodir.no/en/diskos/) and
+[Equinor Volve data sharing](https://www.equinor.com/energy/volve-data-sharing) are additional
+repository **access routes, not implemented live connectors**. Authentication, licences and heterogeneous
+report/file formats must be resolved before extracting data. Exported observations can be mapped to the
+upload template. No comprehensive external porosity, permeability or PVT database is claimed:
+combining existing sources improves visibility, but cannot create missing measurements.
+
 ## Economics: screening, not actual profit or an official prognosis
 
 The Economics page requires acknowledgment of assumptions before calculating. Defaults are illustrative.

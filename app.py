@@ -23,7 +23,7 @@ from utils.data import DataUnavailable, daily_production, latest_row, load_datas
 from utils.extract import SECTIONS, facts_table, sections_for_field
 from utils.maps import FIELD_URL, load_field_geometry, load_map_layers, map_document
 from utils.pt import PT_COLUMNS, load_curated, normalise_pt, pt_for_fields
-from utils.reservoir import field_parameters
+from utils.reservoir import UPLOAD_REQUIRED, combined_parameters, parse_observation_upload
 
 ROOT = Path(__file__).resolve().parent
 CURRENT_YEAR = datetime.now(timezone.utc).year
@@ -262,6 +262,109 @@ def show_field_outline_area(field, field_id, geometry):
     )])
     st.download_button("Download field-outline area CSV", export.to_csv(index=False).encode("utf-8"),
                        file_name=f"{field}_field_outline_area.csv", mime="text/csv")
+
+
+def reservoir_workspace(field, overview, facts, tables, geometry=None):
+    st.subheader("Combined reservoir and fluid observations")
+    st.caption("Combines official SODIR facts, registered literature, existing P/T records and your uploads. "
+               "Observations retain their own source, interval, units and conditions; conflicting values are not averaged. "
+               "Source-backed means traceable to a source, not a guarantee of measurement quality.")
+    upload = remembered_upload("Reservoir / PVT observations · CSV or XLSX", type=["csv", "xlsx"], key="bm_reservoir_upload")
+    st.caption("Long format: one parameter per row. Required: " + ", ".join(UPLOAD_REQUIRED) +
+               ". Optional: value_max, evidence_url, reviewed_date, well. "
+               "Use exact SODIR field names; units are preserved, not silently converted. Uploads stay in this session.")
+    template = pd.DataFrame([dict(field=field, parameter="Porosity", value_min=0.20, value_max=0.25,
+                                  unit="fraction", reservoir="REPLACE with interval", conditions="REPLACE with sample/stress/date",
+                                  source_title="REPLACE with report", source_url="https://example.org/replace-with-your-source",
+                                  source_locator="REPLACE with page/table", well="")])
+    st.download_button("Download reservoir-observation template", template.to_csv(index=False).encode("utf-8"),
+                       file_name="reservoir_observation_template.csv", mime="text/csv")
+    user = None
+    if upload is not None:
+        try:
+            user = parse_observation_upload(upload.getvalue(), upload.name, overview["fldName"])
+            st.caption(f"Loaded {len(user)} user observations across {user['field'].nunique()} fields; "
+                       f"{user['field'].eq(field).sum()} match this field. User sources are not independently verified.")
+        except (ValueError, ImportError, UnicodeError) as exc:
+            st.error(f"Cannot combine reservoir upload: {exc}")
+    tops = None
+    if st.checkbox("Include development-well formation intervals (not net pay)", key="bm_reservoir_tops"):
+        tops = optional_dataset("tops")
+    try:
+        observations = combined_parameters(field, overview, facts, user=user, wells=tables.get("wells"),
+                                           tops=tops, geometry=geometry,
+                                           pt_upload=st.session_state.get("user_pt"),
+                                           reservoir_text=sections_for_field(tables["description"], field).get("Reservoir", ""))
+    except (OSError, ValueError, pd.errors.ParserError) as exc:
+        st.error(f"Could not combine reservoir sources: {exc}")
+        return
+    if tops is not None and not observations["dataset"].eq("SODIR formation tops").any():
+        st.info("No valid formation intervals matched this field's development wellbores; discovery-well fallback is available in Wells & reservoir.")
+    st.markdown("**Source coverage for this field**")
+    coverage = observations.groupby(["dataset", "quality"]).size().rename("observations").reset_index()
+    st.dataframe(coverage, hide_index=True, width="stretch")
+    show_uncertain = st.checkbox("Show provisional / unverified observations", key="bm_reservoir_uncertain")
+    show_estimates = st.checkbox("Show depth-based estimates (not measurements)", key="bm_reservoir_estimates")
+    allowed = ["Source-backed", "User supplied"]
+    if show_uncertain:
+        allowed.append("Provisional / unverified")
+    if show_estimates:
+        allowed.append("Estimate")
+    visible = observations.loc[observations["quality"].isin(allowed)]
+    if visible.empty:
+        st.info("No observations in the selected evidence classes for this field.")
+    else:
+        st.dataframe(visible, hide_index=True, width="stretch",
+                     column_config={"source_url": st.column_config.LinkColumn("Publication / source"),
+                                    "evidence_url": st.column_config.LinkColumn("Evidence access")})
+        st.download_button("Download combined reservoir observations CSV", visible.to_csv(index=False).encode("utf-8"),
+                           file_name=f"{field}_combined_reservoir_observations.csv", mime="text/csv")
+    st.caption("The download follows the evidence filters above. Estimates and unverified legacy P/T seeds are hidden by default. "
+               "A field-outline proxy appears here after loading outline area above. Formation MD intervals are not net pay.")
+    if st.checkbox("Build all-field source inventory and download", key="bm_reservoir_inventory"):
+        try:
+            curated = load_curated()
+            with st.spinner("Combining available observations across all fields…"):
+                inventory = pd.concat([
+                    combined_parameters(name, overview, facts, curated=curated, user=user,
+                                        wells=tables.get("wells"), tops=tops,
+                                        pt_upload=st.session_state.get("user_pt"),
+                                        reservoir_text=sections_for_field(tables["description"], name).get("Reservoir", ""))
+                    for name in overview["fldName"].dropna().unique()
+                ], ignore_index=True)
+            st.caption("All-field inventory covers loaded SODIR descriptions/classifications, registered literature, P/T tables, "
+                       "uploads and optional formation tops. It does not bulk-fetch field outlines or external repository files.")
+            totals = inventory.groupby(["dataset", "quality"]).agg(
+                observations=("parameter", "size"), fields=("field", "nunique")).reset_index()
+            st.dataframe(totals, width="stretch", hide_index=True)
+            download = inventory.loc[inventory["quality"].isin(allowed)]
+            st.download_button("Download all-field combined observations CSV", download.to_csv(index=False).encode("utf-8"),
+                               file_name="all_fields_reservoir_observations.csv", mime="text/csv")
+        except (OSError, ValueError, pd.errors.ParserError) as exc:
+            st.error(f"Cannot build all-field inventory: {exc}")
+    numeric = pd.to_numeric(observations["value_min"], errors="coerce").notna()
+    backed = observations["quality"].isin(["Source-backed", "User supplied"])
+    parameters = observations.loc[backed & numeric, "parameter"].str.lower()
+    gaps = [label for label, pattern in (
+        ("numeric porosity", r"porosity"), ("numeric permeability", r"permeability"),
+        ("viscosity", r"viscosity"), ("density/API", r"density|api gravity"),
+        ("formation volume factor", r"formation volume|formation.*factor"),
+        ("bubble/dew point", r"bubble|dew.point"),
+        ("Z-factor", r"z.factor"),
+    ) if not parameters.str.contains(pattern, regex=True).any()]
+    if not observations.loc[backed, "parameter"].str.contains("composition", case=False).any():
+        gaps.append("fluid composition")
+    if gaps:
+        st.info("No source-backed/user observations registered here for: " + ", ".join(gaps) +
+                ". This is a coverage gap, not proof the data do not exist.")
+    st.markdown(
+        "**Additional repository access routes (not live connectors):** "
+        "[Diskos](https://www.sodir.no/en/diskos/) and "
+        "[Equinor Volve data sharing](https://www.equinor.com/energy/volve-data-sharing). "
+        "No bulk reservoir/PVT feed from these repositories is connected. Access, licensing and file formats "
+        "must be checked; exported observations can be mapped to the upload template. "
+        "The registered literature review remains Kvitebjørn-only; no all-field literature coverage is claimed."
+    )
 
 
 def economics_workspace(field, tables):
@@ -610,7 +713,7 @@ selected_field = st.sidebar.selectbox(
 )
 field_changed = st.session_state.get("settings_field") != selected_field
 parameter_prefixes = ("bm_", "cost_", "econ_", "map_", "period_", "tops_")
-upload_keys = {"bm_upload", "bm_pt_upload", "cost_index_upload"}
+upload_keys = {"bm_upload", "bm_pt_upload", "bm_reservoir_upload", "cost_index_upload"}
 for key in list(st.session_state):
     if key.startswith(parameter_prefixes):
         if field_changed:
@@ -669,6 +772,7 @@ if section == "Overview":
 
     master, facts, pt, tables = get_master()
     identity, reservoir, wells_rows, volumes = field_fact_rows(selected_field, master, facts, pt)
+    geometry = None
     if st.checkbox("Load SODIR field-outline area", key="map_outline_load"):
         field_id_value = number(latest_row(select_field(overview, selected_field)), "fldNpdidField")
         if field_id_value is None or field_id_value <= 0 or field_id_value % 1:
@@ -705,21 +809,7 @@ if section == "Overview":
                                      sections[heading].split("\n") if paragraph.strip())
                 st.markdown(f"<article class='description-card'><h3>{escape(heading)}</h3>"
                             f"{paragraphs or '<p>Not available.</p>'}</article>", unsafe_allow_html=True)
-    st.subheader("Sourced reservoir and fluid parameters")
-    st.caption("Kvitebjørn is the first literature review. Check evidence_status: official descriptions and accessible abstracts are distinguished from provisional indexed excerpts where the full paper was unavailable. Values apply to the stated reservoir/conditions, not universal field constants.")
-    try:
-        parameters = field_parameters(selected_field)
-    except (OSError, ValueError, pd.errors.ParserError) as exc:
-        st.error(f"Could not load sourced reservoir parameters: {exc}")
-        parameters = pd.DataFrame()
-    if parameters.empty:
-        st.info("No source-linked reservoir observations have been registered for this field.")
-    else:
-        st.dataframe(parameters, hide_index=True, width="stretch",
-                     column_config={"source_url": st.column_config.LinkColumn("Publication / source"),
-                                    "evidence_url": st.column_config.LinkColumn("Evidence access")})
-        st.download_button("Download sourced reservoir parameters CSV", parameters.to_csv(index=False).encode("utf-8"),
-                           file_name=f"{selected_field}_reservoir_parameters.csv", mime="text/csv")
+    reservoir_workspace(selected_field, overview, facts, tables, geometry)
     st.caption("Porosity, permeability, PVT, footprint and net/gross thickness require explicit source and interval context. Formation-top MD interval thickness is not net pay or true vertical reservoir thickness.")
     if selected_field == "KVITEBJØRN":
         st.warning("Numerical literature observations are provisional indexed excerpts, not a full-paper validation. Published Tarbert thicknesses have different scopes and have not been reconciled.")
