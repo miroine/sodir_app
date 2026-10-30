@@ -2,6 +2,7 @@
 import json
 from urllib.parse import quote, urlencode
 from urllib.request import urlopen
+from pyproj import Geod
 
 import numpy as np
 import pandas as pd
@@ -19,6 +20,42 @@ VOLUMES = {"OILPRODM3": "prfPrdOilNetMillSm3", "GASPIPVOL": "prfPrdGasNetBillSm3
            "GCONDVOL": "prfPrdCondensateNetMillSm3", "WATPRODVOL": "prfPrdProducedWaterInFieldMillSm3"}
 PRODUCTION_WHERE = "LOCATION='OFFSHORE' AND UNITTYPCOD IN ('P','G','OTL')"
 PRODUCTION_BASIS = "NSTA pipeline gas; oil+condensate+gas OE proxy; NGL unavailable"
+MAP_SOURCES = {
+    "Nearby fields": (FIELDS, "FIELDNAME,FIELDTYPE,STATUS,CURR_OPER", "#007ea8"),
+    "Pipelines": (ROOT + "UKCS_offshore_infrastructure_pipeline_linear_(WGS84)/FeatureServer/1",
+                  "PIPE_NAME,FLUID,STATUS,DESCRIPTIO", "#cb4090"),
+    "Platforms / facilities": (ROOT + quote("UKCS offshore infrastructure surface points WGS84", safe="") + "/FeatureServer/1",
+                              "NAME,INF_TYPE,STATUS,DESCRIPTIO", "#10a881"),
+    "Wellbores": (WELLS, "WELLREGNO,TARGETFLD,DEVTYPE,WELLOPSTAT", "#8674cb"),
+}
+
+
+def context_bounds(geometry, radius_km):
+    coordinates = [point for line in geometry["lines"] for point in line] + geometry["points"]
+    if not coordinates or not 10 <= radius_km <= 150:
+        raise ValueError("Map context needs a location and a radius from 10 to 150 km.")
+    latitude = (min(p[0] for p in coordinates) + max(p[0] for p in coordinates)) / 2
+    longitude = (min(p[1] for p in coordinates) + max(p[1] for p in coordinates)) / 2
+    geod = Geod(ellps="WGS84")
+    west = geod.fwd(longitude, latitude, 270, radius_km * 1000)[0]
+    east = geod.fwd(longitude, latitude, 90, radius_km * 1000)[0]
+    south = geod.fwd(longitude, latitude, 180, radius_km * 1000)[1]
+    north = geod.fwd(longitude, latitude, 0, radius_km * 1000)[1]
+    return (west, south, east, north)
+
+
+@st.cache_data(ttl=3600, max_entries=64, show_spinner=False)
+def load_map_context(kind, bounds):
+    service, columns, color = MAP_SOURCES[kind]
+    features = query(service, outFields=columns, returnGeometry="true", outSR=4326,
+                     geometry=",".join(map(str, bounds)), geometryType="esriGeometryEnvelope",
+                     inSR=4326, spatialRel="esriSpatialRelIntersects",
+                     maxAllowableOffset=0.0001, returnCentroid="true" if kind == "Nearby fields" else "false")
+    for feature in features:
+        geometry = feature.get("geometry")
+        if not isinstance(geometry, dict) or not any(key in geometry for key in ("rings", "paths", "x")):
+            raise DataUnavailable(f"NSTA {kind} returned a record without usable map geometry.")
+    return dict(title=kind, color=color, source=service, features=features)
 
 
 def query(service, **parameters):

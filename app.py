@@ -10,6 +10,7 @@ import streamlit as st
 
 from utils import benchmark as bm
 from utils import economics as econ, figures, investments as inv, theme, ukcs
+from utils import portfolio as pf, portfolio_ui
 from utils.callbaks_figure import (
     callback_investments,
     callback_plot_gas,
@@ -27,7 +28,7 @@ from utils.reservoir import UPLOAD_REQUIRED, combined_parameters, parse_observat
 
 ROOT = Path(__file__).resolve().parent
 CURRENT_YEAR = datetime.now(timezone.utc).year
-SECTION_NAMES = ["Overview", "Production", "Wells & reservoir", "Reserves", "Investments", "Economics", "Map", "Benchmark", "Data & QA"]
+SECTION_NAMES = ["Overview", "Production", "Wells & reservoir", "Reserves", "Investments", "Economics", "Map", "Data & QA"]
 
 st.set_page_config(page_title="North Sea Field Intelligence · SODIR + NSTA", page_icon="◆", layout="wide")
 
@@ -661,12 +662,33 @@ def uk_workspace(section, field, overview):
         except DataUnavailable as exc:
             st.error(str(exc))
             return
+        c1, c2 = st.columns([1, 3])
+        radius = c1.selectbox("Nearby context · km", [25, 50, 100, 150], index=1, key="map_uk_radius")
+        kinds = c2.multiselect("NSTA map layers", list(ukcs.MAP_SOURCES),
+                               default=["Nearby fields", "Pipelines", "Platforms / facilities"],
+                               key="map_uk_layers")
+        bounds = ukcs.context_bounds(geometry, radius)
+        context = []
+        for kind in kinds:
+            try:
+                with st.spinner(f"Loading NSTA {kind.lower()}…"):
+                    layer = ukcs.load_map_context(kind, bounds)
+                context.append(layer)
+            except DataUnavailable as exc:
+                st.warning(f"{kind} unavailable; other map layers remain usable: {exc}")
+        st.caption("Amber: selected field · blue: nearby fields · pink: pipelines · green: platforms/facilities · purple: wellbores. "
+                   "Click features for names and source attributes. Use Layers to change the basemap; use North Sea to see the coastline.")
         st.iframe(map_document(name, geometry, {}, dark=dark, state_id=st.session_state["map_state_id"],
-                               provider="NSTA"), height=665)
+                               provider="NSTA", context=context, context_bounds=bounds), height=720)
+        st.caption("Loaded local context: " + (" · ".join(f"{layer['title']}: {len(layer['features'])}" for layer in context)
+                                             if context else "No context layers selected or available."))
         st.metric("NSTA field-outline area", f"{geometry['outline_area_km2']:,.2f} km²")
-        st.caption("WGS84 ellipsoidal footprint proxy, not net reservoir or drainage area. Basemaps, measurement and sketch tools are available. "
-                   "No SODIR WMS overlays are applied to UK fields.")
+        st.caption("WGS84 ellipsoidal footprint proxy, not net reservoir or drainage area. "
+                   "Context is loaded within a bounding box around the field, not dynamically when panning. "
+                   "Increase the context distance to see more. Source statuses may include inactive assets; this map is not for navigation.")
         st.link_button("NSTA field polygon source", ukcs.FIELDS)
+        for layer in context:
+            st.link_button(f"NSTA source · {layer['title']}", layer["source"])
     elif section == "Data & QA":
         st.markdown("**Connected UK sources:** offshore field polygons/catalogue, PPRS field-month production, and target-field wellbores.")
         st.dataframe(pd.DataFrame([
@@ -802,12 +824,19 @@ def investment_workspace(peers, yearly, wells, color_key, color_column, highligh
 
 
 # ----------------------------------------------------------------------------- sidebar
+for key in list(st.session_state):
+    if key.startswith("pf_") and key != "pf_upload" and not key.endswith("_upload"):
+        st.session_state[key] = st.session_state[key]
+workspace = st.sidebar.segmented_control("Workspace", ["Field Explorer", "Benchmark", "Portfolio"],
+                                        default="Field Explorer", key="workspace") or "Field Explorer"
 database = st.sidebar.segmented_control("Database", ["NCS · SODIR", "UKCS · NSTA"],
                                        default="NCS · SODIR", key="database")
 is_uk = database == "UKCS · NSTA"
 st.sidebar.markdown("<div class='eyebrow'>North Sea field intelligence</div>", unsafe_allow_html=True)
 st.sidebar.title("Field Intelligence")
-st.sidebar.caption("SODIR + NSTA · switch field database; benchmark across both shelves")
+st.sidebar.caption("Field Explorer · individual assets\n\nBenchmark · field peers\n\nPortfolio · equity by company")
+if workspace != "Field Explorer":
+    st.sidebar.caption("Database/field selection is for Field Explorer and the benchmark highlight. Portfolio has independent country and company filters.")
 if st.sidebar.button("Refresh source data", width="stretch"):
     load_dataset.clear()
     load_map_layers.clear()
@@ -817,24 +846,30 @@ if st.sidebar.button("Refresh source data", width="stretch"):
     st.session_state.pop("data_failures", None)
     for loader in (ukcs.load_fields, ukcs.load_yearly, ukcs.load_monthly, ukcs.load_wells, ukcs.load_geometry):
         loader.clear()
+    ukcs.load_map_context.clear()
+    pf.load_uk_ownership.clear()
+    pf.load_uk_region_polygons.clear()
 
-try:
-    overview = ukcs.load_fields() if is_uk else available_dataset("overview")
-except DataUnavailable as exc:
-    st.error(str(exc))
-    st.info("Try Refresh SODIR data in the sidebar, or retry after a minute. FactMaps can still be opened directly.")
-    st.link_button("Open SODIR FactMaps", "https://factmaps.sodir.no/")
-    st.stop()
-
-fields = sorted(overview["fldName"].dropna().unique().tolist())
-if not fields:
-    st.warning("SODIR returned an empty field catalogue. Please try refreshing.")
-    st.stop()
-selected_field = st.sidebar.selectbox(
-    "Field", fields, index=fields.index("OSEBERG") if "OSEBERG" in fields else 0,
-    format_func=lambda value: value.removeprefix("UKCS::"), key="field",
-)
-field_changed = st.session_state.get("settings_field") != selected_field
+selected_field = st.session_state.get("settings_field")
+overview = pd.DataFrame()
+if workspace == "Portfolio" and "field" in st.session_state:
+    st.session_state["field"] = st.session_state["field"]
+if workspace != "Portfolio":
+    try:
+        overview = ukcs.load_fields() if is_uk else available_dataset("overview")
+    except DataUnavailable as exc:
+        st.error(str(exc))
+        st.info("Refresh source data, switch database, or open Portfolio with its independent country filters.")
+        st.stop()
+    fields = sorted(overview["fldName"].dropna().unique().tolist())
+    if not fields:
+        st.warning("The selected source returned an empty field catalogue. Please try refreshing.")
+        st.stop()
+    selected_field = st.sidebar.selectbox(
+        "Field", fields, index=fields.index("OSEBERG") if "OSEBERG" in fields else 0,
+        format_func=lambda value: value.removeprefix("UKCS::"), key="field",
+    )
+field_changed = selected_field is not None and st.session_state.get("settings_field") != selected_field
 parameter_prefixes = ("bm_", "cost_", "econ_", "map_", "period_", "tops_")
 upload_keys = {"bm_upload", "bm_pt_upload", "bm_reservoir_upload", "cost_index_upload"}
 for key in list(st.session_state):
@@ -850,7 +885,12 @@ if field_changed:
     st.session_state.pop("user_pt", None)
     st.session_state.pop("economic_scenarios", None)
     st.session_state.pop("saved_uploads", None)
-section = st.sidebar.radio("Explore", SECTION_NAMES, key="section")
+if workspace == "Field Explorer":
+    section = st.sidebar.radio("Explore field", SECTION_NAMES, key="section")
+else:
+    section = workspace
+    if "section" in st.session_state:
+        st.session_state["section"] = st.session_state["section"]
 st.sidebar.divider()
 appearance = st.sidebar.selectbox("Appearance", ["Light", "Dark"], key="appearance")
 dark = appearance == "Dark"
@@ -870,6 +910,13 @@ st.markdown(
 )
 
 # ----------------------------------------------------------------------------- shared loads
+if section == "Portfolio":
+    try:
+        portfolio_ui.render(dark, CURRENT_YEAR, available_dataset)
+    except ValueError as exc:
+        st.error(f"Cannot calculate this portfolio: {exc}")
+    st.stop()
+
 if is_uk and section != "Benchmark":
     try:
         uk_workspace(section, selected_field, overview)

@@ -22,5 +22,8 @@ def nsta_offline_boundary():
              reporting_months=12, complete_reporting=True)
         for year in range(2021, 2025)
     ])
-    with patch.object(ukcs, "load_fields", return_value=fields), patch.object(ukcs, "load_yearly", return_value=yearly):
+    with (patch.object(ukcs, "load_fields", return_value=fields),
+          patch.object(ukcs, "load_yearly", return_value=yearly),
+          patch.object(ukcs, "load_map_context", side_effect=lambda kind, bounds: dict(
+              title=kind, color=ukcs.MAP_SOURCES[kind][2], source=ukcs.MAP_SOURCES[kind][0], features=[]))):
         yield

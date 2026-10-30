@@ -92,7 +92,7 @@ class InvestmentTests(unittest.TestCase):
         tables["investments"] = investment_data()
         with patch("utils.data.load_dataset", side_effect=lambda name: tables[name]):
             app = AppTest.from_file(str(ROOT / "app.py")).run()
-            app.sidebar.radio[0].set_value("Benchmark").run()
+            app.sidebar.segmented_control(key="workspace").set_value("Benchmark").run()
             self.assertEqual(len(app.exception), 0)
             self.assertEqual(app.selectbox(key="cost_cutoff").value, 2025)
             app.selectbox(key="cost_metric").select("Investment / produced boe").run()

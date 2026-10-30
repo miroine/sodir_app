@@ -10,6 +10,9 @@ from streamlit.testing.v1 import AppTest
 from utils import ukcs, benchmark as bm, figures
 from utils.data import DataUnavailable
 from test_dashboard import datasets, ROOT
+from utils.maps import map_document
+
+LOAD_MAP_CONTEXT = ukcs.load_map_context.__wrapped__
 
 
 def test_units_and_missing_ngl_are_not_zero_filled():
@@ -116,7 +119,7 @@ def test_database_switch_and_combined_country_filter():
           patch.object(ukcs, "load_geometry", return_value=dict(lines=[[[60, 1], [60, 2], [61, 2], [60, 1]]],
                                                                points=[], outline_area_km2=20))):
         app = AppTest.from_file(str(ROOT / "app.py")).run()
-        app.sidebar.radio[0].set_value("Benchmark").run()
+        app.sidebar.segmented_control(key="workspace").set_value("Benchmark").run()
         assert not app.exception
         assert app.multiselect(key="bm_countries").value == ["NCS", "UKCS"]
         assert app.selectbox(key="bm_basis").value == "Annual volume"
@@ -126,6 +129,7 @@ def test_database_switch_and_combined_country_filter():
         app.sidebar.segmented_control(key="database").set_value("UKCS · NSTA").run()
         assert not app.exception
         assert app.sidebar.selectbox(key="field").value == "UKCS::TEST UK"
+        app.sidebar.segmented_control(key="workspace").set_value("Field Explorer").run()
         for section in ("Overview", "Production", "Wells & reservoir", "Map", "Economics", "Data & QA"):
             app.sidebar.radio[0].set_value(section).run()
             assert not app.exception, (section, app.exception)
@@ -141,7 +145,7 @@ def test_uk_failure_is_visible_and_ncs_only_bypasses_uk_service():
     with patch("utils.data.load_dataset", side_effect=lambda name: tables[name]):
         app = AppTest.from_file(str(ROOT / "app.py")).run()
         with patch.object(ukcs, "load_fields", side_effect=DataUnavailable("NSTA test outage")) as uk:
-            app.sidebar.radio[0].set_value("Benchmark").run()
+            app.sidebar.segmented_control(key="workspace").set_value("Benchmark").run()
             assert not app.exception
             assert any("UKCS peers unavailable" in message.value for message in app.warning)
             uk.reset_mock()
@@ -151,3 +155,51 @@ def test_uk_failure_is_visible_and_ncs_only_bypasses_uk_service():
             app.multiselect(key="bm_countries").set_value(["UKCS"]).run()
             assert not app.exception
             assert any("Select at least one available country" in message.value for message in app.info)
+
+
+def test_map_context_bounds_queries_and_safe_labels():
+    geometry = dict(lines=[[[57.7, .8], [57.8, .9]]], points=[])
+    bounds = ukcs.context_bounds(geometry, 50)
+    assert bounds[0] < .85 < bounds[2]
+    assert bounds[1] < 57.75 < bounds[3]
+    with pytest.raises(ValueError):
+        ukcs.context_bounds(geometry, 500)
+    feature = dict(attributes={"PIPE_NAME": "</script><script>alert(1)</script>"},
+                   geometry={"paths": [[[.8, 57.7], [.9, 57.8]]]})
+    with patch.object(ukcs, "query", return_value=[feature]) as query:
+        context = LOAD_MAP_CONTEXT("Pipelines", bounds)
+        assert query.call_args.kwargs["returnCentroid"] == "false"
+        assert query.call_args.kwargs["geometryType"] == "esriGeometryEnvelope"
+        assert query.call_args.args[0].endswith("FeatureServer/1")
+    document = map_document("TEST", geometry, {}, provider="NSTA", context=[context], context_bounds=bounds)
+    assert "</script><script>alert(1)" not in document
+    assert '"context_bounds":' in document
+    assert "North Sea" in document
+    assert "Platforms / facilities" not in context["title"]
+    with patch.object(ukcs, "query", return_value=[dict(attributes={}, geometry=None)]):
+        with pytest.raises(DataUnavailable, match="usable map geometry"):
+            LOAD_MAP_CONTEXT("Pipelines", bounds)
+
+
+def test_uk_map_context_controls_persist_and_layer_failure_is_explicit():
+    geometry = dict(lines=[[[57.7, .8], [57.8, .9], [57.7, .8]]], points=[], outline_area_km2=20)
+    tables = datasets()
+    with (patch("utils.data.load_dataset", side_effect=lambda name: tables[name]),
+          patch.object(ukcs, "load_monthly", return_value=tables["monthly"]),
+          patch.object(ukcs, "load_geometry", return_value=geometry)):
+        app = AppTest.from_file(str(ROOT / "app.py")).run()
+        app.sidebar.segmented_control(key="database").set_value("UKCS · NSTA").run()
+        app.sidebar.radio[0].set_value("Map").run()
+        assert not app.exception
+        assert len(app.multiselect(key="map_uk_layers").value) == 3
+        app.selectbox(key="map_uk_radius").set_value(100).run()
+        app.multiselect(key="map_uk_layers").set_value(["Nearby fields", "Wellbores"]).run()
+        app.sidebar.radio[0].set_value("Overview").run()
+        app.sidebar.radio[0].set_value("Map").run()
+        assert app.selectbox(key="map_uk_radius").value == 100
+        assert app.multiselect(key="map_uk_layers").value == ["Nearby fields", "Wellbores"]
+        with patch.object(ukcs, "load_map_context", side_effect=DataUnavailable("Test layer outage")):
+            app.run()
+            assert not app.exception
+            assert any("other map layers remain usable" in warning.value for warning in app.warning)
+            assert len(app.get("iframe")) == 1

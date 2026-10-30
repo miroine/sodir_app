@@ -17,6 +17,11 @@
     }
     .leaflet-control-layers { max-height: 300px; overflow-y: auto; }
     .leaflet-control-layers label { line-height: 1.8; }
+    .field-context-label, .selected-field-label {
+      color: #102a43; background: rgba(255,255,255,0.9); border-radius: 3px;
+      padding: 2px 4px; font-size: 10px; white-space: nowrap; width: max-content !important;
+    }
+    .selected-field-label { background: #ffe2aa; font-size: 12px; border: 1px solid #a56800; }
     .map-actions { padding: 8px 12px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
     .map-actions button { padding: 7px 12px; cursor: pointer; }
     .dark .leaflet-popup-content-wrapper, .dark .leaflet-popup-tip {
@@ -37,6 +42,7 @@
   <script>
     const data = __MAP_DATA__;
     const status = document.getElementById("status");
+    if (data.provider === "NSTA") document.getElementById("map").style.height = "610px";
     document.title = data.provider + " field outline map";
     document.getElementById("map").setAttribute("aria-label", "Interactive " + data.provider + " field map");
     if (data.dark) document.body.classList.add("dark");
@@ -55,6 +61,7 @@
           storageError = " Browser storage is unavailable; map settings cannot be retained. Export sketches before leaving.";
         }
         const map = L.map("map", {scrollWheelZoom: false}).setView([64, 5], 5);
+        if (data.provider === "NSTA") map.attributionControl.addAttribution("Field and infrastructure data © NSTA");
         const osmCredit = '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>';
         const cartoCredit = osmCredit + ' © <a href="https://carto.com/attributions">CARTO</a>';
         const basemaps = {
@@ -73,10 +80,14 @@
           "Satellite": L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", {
             maxZoom: 18, attribution: "Tiles © Esri — Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community",
           }),
+          "Ocean / bathymetry": L.tileLayer("https://services.arcgisonline.com/ArcGIS/rest/services/Ocean/World_Ocean_Base/MapServer/tile/{z}/{y}/{x}", {
+            maxNativeZoom: 10, maxZoom: 18,
+            attribution: "Ocean basemap © Esri, GEBCO, NOAA and contributors — not for navigation",
+          }),
         };
-        basemaps[saved && basemaps[saved.basemap] ? saved.basemap : (data.dark ? "Dark" : "Light")].addTo(map);
+        basemaps[saved && basemaps[saved.basemap] ? saved.basemap : (data.dark ? "Dark" : data.provider === "NSTA" ? "Ocean / bathymetry" : "Light")].addTo(map);
         const reportError = () => {
-          status.textContent = "Some map tiles are unavailable. Field boundaries remain visible; try the official FactMaps link.";
+          status.textContent = "Some map tiles are unavailable. Try another basemap in Layers; source geometry remains visible.";
         };
         Object.values(basemaps).forEach((layer) => layer.on("tileerror", reportError));
         const overlays = {};
@@ -88,12 +99,70 @@
           overlay.on("tileerror", reportError);
           overlays[layer.title + " (" + layer.name.replace(/[<>&"']/g, "") + ")"] = overlay;
         });
+        (data.context || []).forEach((item) => {
+          const group = L.featureGroup().addTo(map);
+          item.features.forEach((feature) => {
+            const geometry = feature.geometry;
+            const attributes = feature.attributes || {};
+            const title = attributes.FIELDNAME || attributes.PIPE_NAME || attributes.NAME || attributes.WELLREGNO || item.title;
+            const popup = document.createElement("div");
+            const heading = document.createElement("strong");
+            heading.textContent = title;
+            popup.appendChild(heading);
+            Object.entries(attributes).forEach(([key, value]) => {
+              if (value === null || value === "") return;
+              const row = document.createElement("div");
+              row.textContent = key + ": " + value;
+              popup.appendChild(row);
+            });
+            const source = document.createElement("a");
+            source.textContent = "NSTA source";
+            source.href = item.source;
+            source.target = "_blank";
+            source.rel = "noopener noreferrer";
+            popup.appendChild(source);
+            let layer;
+            if (geometry.rings) {
+              layer = L.polygon(geometry.rings.map(ring => ring.map(p => [p[1], p[0]])),
+                {color: item.color, weight: 2, fillOpacity: 0.18});
+            } else if (geometry.paths) {
+              layer = L.polyline(geometry.paths.map(path => path.map(p => [p[1], p[0]])),
+                {color: item.color, weight: 2, opacity: 0.85});
+            } else {
+              layer = L.circleMarker([geometry.y, geometry.x],
+                {color: "#ffffff", weight: 1, fillColor: item.color, fillOpacity: 0.9,
+                 radius: item.title === "Wellbores" ? 3 : 6});
+            }
+            layer.bindPopup(popup);
+            const tooltip = document.createElement("span");
+            tooltip.textContent = title;
+            layer.bindTooltip(tooltip, {sticky: true});
+            layer.addTo(group);
+            if (geometry.rings && feature.centroid) {
+              const label = document.createElement("span");
+              label.textContent = title;
+              L.marker([feature.centroid.y, feature.centroid.x], {
+                icon: L.divIcon({html: label, className: "field-context-label", iconSize: [100, 18]}),
+                interactive: false,
+              }).addTo(group);
+            }
+          });
+          overlays[item.title] = group;
+        });
         const selected = L.featureGroup().addTo(map);
         const label = document.createElement("span");
         label.textContent = data.field;
         data.geometry.lines.forEach((line) => {
           L.polyline(line, {color: "#f6a623", weight: 4}).bindTooltip(label.cloneNode(true)).addTo(selected);
         });
+        if (data.provider === "NSTA" && selected.getBounds().isValid()) {
+          const badge = document.createElement("strong");
+          badge.textContent = data.field;
+          L.marker(selected.getBounds().getCenter(), {
+            icon: L.divIcon({html: badge, className: "selected-field-label", iconSize: [140, 22]}),
+            interactive: false,
+          }).addTo(selected);
+        }
         data.geometry.points.forEach((point) => {
           L.circleMarker(point, {color: "#f6a623", radius: 8}).bindTooltip(label.cloneNode(true)).addTo(selected);
         });
@@ -228,7 +297,10 @@
         }
         const bounds = selected.getBounds();
         if (saved && saved.center) map.setView(saved.center, saved.zoom);
-        else if (bounds.isValid()) map.fitBounds(bounds, {padding: [45, 45], maxZoom: 11});
+        else if (data.context_bounds) {
+          const box = data.context_bounds;
+          map.fitBounds([[box[1], box[0]], [box[3], box[2]]], {padding: [15, 15]});
+        } else if (bounds.isValid()) map.fitBounds(bounds, {padding: [45, 45], maxZoom: 11});
         if (saved && saved.overlays) {
           Object.entries(overlays).forEach(([key, layer]) => {
             if (saved.overlays[key] === false) map.removeLayer(layer);
@@ -247,6 +319,34 @@
           return button;
         };
         home.addTo(map);
+        if (data.provider === "NSTA") {
+          if (data.context_bounds) {
+            const contextControl = L.control({position: "topleft"});
+            contextControl.onAdd = () => {
+              const button = L.DomUtil.create("button", "leaflet-bar");
+              button.textContent = "Nearby area";
+              button.style.padding = "8px";
+              L.DomEvent.disableClickPropagation(button);
+              button.onclick = () => {
+                const box = data.context_bounds;
+                map.fitBounds([[box[1], box[0]], [box[3], box[2]]], {padding: [15, 15]});
+              };
+              return button;
+            };
+            contextControl.addTo(map);
+          }
+          const regional = L.control({position: "topleft"});
+          regional.onAdd = () => {
+            const button = L.DomUtil.create("button", "leaflet-bar");
+            button.textContent = "North Sea";
+            button.title = "Show the North Sea and surrounding coastlines";
+            button.style.padding = "8px";
+            L.DomEvent.disableClickPropagation(button);
+            button.onclick = () => map.setView([57, 0], 5);
+            return button;
+          };
+          regional.addTo(map);
+        }
         status.textContent = drawingAvailable
           ? "Selected field highlighted in amber. Measurements are approximate, not for navigation. Map settings and sketches are kept in this browser tab until the field changes. Export for a permanent copy." + storageError
           : "Map loaded, but drawing tools are unavailable. Reload to retry the drawing library." + storageError;

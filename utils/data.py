@@ -17,6 +17,7 @@ DATASETS = {
     "investments": ("field_investment_yearly", "prfInformationCarrier"),
     "wells": ("wellbore_development_all", "wlbField"),
     "tops": ("wellbore_formation_top", "wlbName"),
+    "equity": ("field_licensee_hst", "fldName"),
 }
 WELL_COLUMNS = [
     "wlbWellboreName", "wlbWell", "wlbField", "wlbPurpose", "wlbPurposePlanned", "wlbStatus",
