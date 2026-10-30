@@ -1,9 +1,11 @@
-# NCS Field Intelligence · SODIR Field Explorer
+# North Sea Field Intelligence · SODIR + NSTA
 
-Streamlit app for Norwegian continental shelf fields: production, reserves, wells, reservoir facts
+Streamlit app for Norwegian and UK continental shelf fields: production, reserves, wells, reservoir facts
 extracted from SODIR description texts, an indicative pressure/temperature layer, and a peer
 **benchmark workspace** (normalised profiles, reserve intensity, recovery factors, producers vs
 injectors, GOR / water cut, profile import and average-profile generation).
+The sidebar switches the selected-field database between **NCS · SODIR** and **UKCS · NSTA**.
+Benchmarks default to both countries, independently of the selected-field database.
 
 Consulting-style design: deep-navy / electric-blue palette, serif action titles, thin rules, a source
 line under every exhibit, and one warm accent reserved for the item in focus (selected field or imported profile).
@@ -35,6 +37,26 @@ python -m pytest -q          # offline extraction, calculation and dashboard reg
 `field`, `field_production_monthly`, `field_production_yearly`, `field_reserves`, `field_in_place_volumes`,
 `field_description`, `field_investment_yearly`, `wellbore_development_all` (purpose, status, content,
 completion and plugging dates, depths), `wellbore_formation_top` (loaded on demand).
+
+## UKCS sources and combined benchmarking
+
+The public NSTA connectors require no account or credentials:
+
+* [Offshore field catalogue and polygons](https://services-eu1.arcgis.com/OZMfUznmLTnWccBc/arcgis/rest/services/Offshore_hydrocarbon_fields_(WGS84)/FeatureServer/0)
+* [PPRS monthly field production](https://services-eu1.arcgis.com/OZMfUznmLTnWccBc/arcgis/rest/services/UKCS_hydrocarbon_field_production_reports_PPRS_polygons_WGS84/FeatureServer/6)
+* [Offshore wellbores and target fields](https://services-eu1.arcgis.com/OZMfUznmLTnWccBc/arcgis/rest/services/UKCS%20offshore%20petroleum%20wells%20bottom%20holes%20WGS84/FeatureServer/0)
+
+UK Overview, Production, Wells & reservoir, Map and Data & QA use these services; other field sections explicitly report unavailable inputs. The map reuses the basemap, distance, circle, drawing and export tools, with NSTA polygons and no Norwegian WMS overlays. Outline area uses WGS84 geodesics; it is not net reservoir area. `DEPTH_M` is displayed with its source label, not inferred to be reservoir depth.
+
+**Production conventions:** `OILPRODM3`, `GCONDVOL`, `WATPRODVOL` are m³, divided by 1,000,000 to million Sm³. `GASPIPVOL` is kSm³, divided by 1,000,000 to billion Sm³. UK gas here is **gas to pipeline**, not gross associated/dry gas or a guaranteed equivalent of SODIR sales gas. UK OE is a volume-convention proxy (oil + condensate + pipeline gas in the displayed million-Sm³/billion-Sm³ convention); separate NGL stays missing, never zero-filled. Reporting/allocation differences must be considered when comparing profiles and GOR.
+
+Only production unit types P, G and OTL marked OFFSHORE and matching the offshore catalogue are included. Duplicate field-month records are rejected for monthly views; affected annual field-years are blanked rather than double-counted. Annual volumes also require a complete set of non-null product observations, contiguous months, and complete interior reporting years. Contiguous partial first/last reporting years are retained **without annualisation** and flagged. Missing calendar years remain absent, not zero production. The annual reporting-QA table is available in UK Production. Current/future calendar years are excluded from annual benchmarks.
+
+Country-qualified keys (`NCS::NAME`, `UKCS::NAME`) prevent same-name field collisions. Choose countries independently, colour by Country, and compare absolute oil/gas/OE profiles, envelopes and GOR/water cut. Selected-profile coverage exports explain excluded fields; peer exports retain country and production-basis metadata. Existing formation, in-place and recoverable-volume filters remain available, but UK fields with unreported attributes cannot match a specific formation and require "Keep fields without in-place / recoverable data" for missing volumes.
+
+There is **no connected comparable UK field-level reserve/in-place, CAPEX, formation/PVT or historic producing-well timeline**. UK fields cannot contribute to reserve-normalised, per-producing-well or investment metrics without those inputs. Current wellbore intent/status is displayed separately; "Constructed" is not "Producing", and wellbores/sidetracks are not counted as historic producers. Norwegian tax/economics and NCS P/T enrichment never run on UK fields. These gaps are explicit rather than filled with estimates.
+
+Selected countries are loaded independently; service failures are shown explicitly and any resulting peer set is labelled incomplete. Choosing NCS-only bypasses UK requests. Field-specific controls reset on country/field change and otherwise retain the existing navigation-persistence behaviour.
 
 ## Text extraction (`utils/extract.py`)
 

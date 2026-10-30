@@ -100,8 +100,8 @@ class InvestmentTests(unittest.TestCase):
             app.number_input(key="cost_fx_USD").set_value(10).run()
             self.assertEqual(len(app.exception), 0)
             summary = app.dataframe[-1].value
-            self.assertEqual(summary.loc["OSEBERG", "currency"], "USD")
-            self.assertAlmostEqual(summary.loc["OSEBERG", "investment_million"], 158.9)
+            self.assertEqual(summary.loc["NCS::OSEBERG", "currency"], "USD")
+            self.assertAlmostEqual(summary.loc["NCS::OSEBERG", "investment_million"], 158.9)
             app.checkbox(key="cost_inflation").check().run()
             self.assertEqual(len(app.exception), 0)
             self.assertTrue(any("Upload your completed inflation index" in item.value for item in app.info))

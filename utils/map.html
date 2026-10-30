@@ -37,6 +37,8 @@
   <script>
     const data = __MAP_DATA__;
     const status = document.getElementById("status");
+    document.title = data.provider + " field outline map";
+    document.getElementById("map").setAttribute("aria-label", "Interactive " + data.provider + " field map");
     if (data.dark) document.body.classList.add("dark");
     if (!window.L) {
       status.textContent = "Map library unavailable. Use the official FactMaps link.";
@@ -104,6 +106,7 @@
             const feature = layer.toGeoJSON();
             feature.properties = {
               field: data.field,
+              source: data.provider,
               shape: layer instanceof L.Circle ? "circle" : layer instanceof L.Rectangle ? "rectangle" : "geometry",
               ...(layer instanceof L.Circle ? {radius_m: layer.getRadius()} : {}),
             };

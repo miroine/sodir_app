@@ -6,7 +6,7 @@ import plotly.graph_objects as go
 from utils import theme
 from utils.benchmark import PRODUCT_UNITS
 
-SOURCE = "Norwegian Offshore Directorate (SODIR) FactPages; text-derived attributes by rule-based extraction"
+SOURCE = "SODIR (NCS); NSTA public offshore data (UKCS where included). See coverage and reporting-basis notes."
 
 
 def category_colors(values, key):
@@ -66,7 +66,14 @@ def investment_history(annual, master, metric, label, unit, color_key, color_col
 
 
 def _label(master, field):
+    if isinstance(field, str) and field.startswith(("NCS::", "UKCS::")):
+        country, name = field.split("::", 1)
+        return f"{name.title()} · {country}"
     return field.title() if isinstance(field, str) else str(field)
+
+
+def _annual_gaps(part, x_column):
+    return part.set_index(x_column).reindex(range(int(part[x_column].min()), int(part[x_column].max()) + 1)).rename_axis(x_column).reset_index()
 
 
 def _hover_fields(master, field):
@@ -75,7 +82,7 @@ def _hover_fields(master, field):
     row = master.loc[field]
     parts = []
     for label, column, fmt in (
-        ("HC", "hc_type", "{}"), ("Drive", "drainage_strategy", "{}"), ("Formation", "main_formation", "{}"),
+        ("Country", "country", "{}"), ("HC", "hc_type", "{}"), ("Drive", "drainage_strategy", "{}"), ("Formation", "main_formation", "{}"),
         ("Recoverable", "recoverable_oe", "{:,.0f} MSm³ o.e."), ("Start", "start_year", "{:.0f}"),
     ):
         value = row.get(column)
@@ -93,6 +100,7 @@ def profile_figure(profiles, env, master, color_key="HC type", color_column="hc_
     shown = set()
     if show_lines:
         for field, part in profiles.groupby("fldName"):
+            part = _annual_gaps(part, x_col)
             category = str(master.loc[field, color_column]) if field in master.index and color_column in master else "n/a"
             color = colors.get(category, theme.GREY)
             is_focus = field == highlight
@@ -123,7 +131,7 @@ def profile_figure(profiles, env, master, color_key="HC type", color_column="hc_
             hovertemplate="Year %{x}: mean %{y:,.2f}<extra></extra>",
         )
     if highlight and highlight in set(profiles["fldName"]):
-        part = profiles.loc[profiles["fldName"] == highlight]
+        part = _annual_gaps(profiles.loc[profiles["fldName"] == highlight], x_col)
         fig.add_scatter(
             x=part[x_col], y=part["value"], mode="lines+markers", name=f"{_label(master, highlight)} (selected)",
             line=dict(color=theme.ACCENT, width=3.2), marker=dict(size=5, color=theme.ACCENT),
@@ -254,6 +262,7 @@ def ratio_figure(table, metric, master, color_key="HC type", color_column="hc_ty
     shown = set()
     data = table.dropna(subset=[metric])
     for field, part in data.groupby("fldName"):
+        part = _annual_gaps(part, x_col)
         category = str(master.loc[field, color_column]) if field in master.index else "n/a"
         focus = field == highlight
         fig.add_scatter(
@@ -261,13 +270,13 @@ def ratio_figure(table, metric, master, color_key="HC type", color_column="hc_ty
             showlegend=category not in shown and not focus,
             line=dict(color=theme.ACCENT if focus else colors.get(category, theme.GREY), width=3.2 if focus else 1.1),
             opacity=1 if focus else 0.55,
-            hovertemplate=f"<b>{field.title()}</b><br>%{{x}}: %{{y:,.2f}}<extra></extra>",
+            hovertemplate=f"<b>{_label(master, field)}</b><br>%{{x}}: %{{y:,.2f}}<extra></extra>",
         )
         if not focus:
             shown.add(category)
     if highlight in set(data["fldName"]):
-        part = data.loc[data["fldName"] == highlight]
-        fig.add_scatter(x=part[x_col], y=part[metric], mode="lines+markers", name=f"{highlight.title()} (selected)",
+        part = _annual_gaps(data.loc[data["fldName"] == highlight], x_col)
+        fig.add_scatter(x=part[x_col], y=part[metric], mode="lines+markers", name=f"{_label(master, highlight)} (selected)",
                         line=dict(color=theme.ACCENT, width=3.2), marker=dict(size=5, color=theme.ACCENT))
     median = data.groupby("years_on")[metric].median() if x_mode == "years_on" else None
     if median is not None and len(median) > 2:
@@ -345,4 +354,7 @@ def yearly_field_figure(yearly_field, dark=False):
             rangemode="tozero",
         ))
     fig.update_layout(barmode="stack", xaxis_title="", yaxis_title="million Sm³ o.e. per year", legend=dict(y=1.02))
-    return theme.style(fig, "Annual production by product", "Wells: production wells completed and not yet plugged (SODIR wellbore table)", SOURCE, dark=dark, height=440)
+    well_note = ("Wells: production wells completed and not yet plugged (SODIR wellbore table)"
+                 if "producers" in yearly_field and yearly_field["producers"].notna().any()
+                 else "Reported annual product volumes; historical producing-well overlay unavailable")
+    return theme.style(fig, "Annual production by product", well_note, SOURCE, dark=dark, height=440)

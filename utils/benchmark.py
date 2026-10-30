@@ -22,6 +22,7 @@ BASES = {
 ACTIVE_STATUSES = {"PRODUCING", "INJECTING", "ONLINE/OPERATIONAL", "PRODUCING/INJECTING"}
 NEVER_DRILLED = {"WILL NEVER BE DRILLED", "PREDRILLED"}
 COLOR_OPTIONS = {
+    "Country": "country",
     "HC type": "hc_type", "Drainage strategy": "drainage_strategy", "Area": "area",
     "Main group": "main_group", "Main formation": "main_formation", "Lithology": "main_lithology",
     "Age": "main_age", "Status": "status", "Development concept": "main_concept",

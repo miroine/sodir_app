@@ -9,7 +9,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from utils import benchmark as bm
-from utils import economics as econ, figures, investments as inv, theme
+from utils import economics as econ, figures, investments as inv, theme, ukcs
 from utils.callbaks_figure import (
     callback_investments,
     callback_plot_gas,
@@ -19,7 +19,7 @@ from utils.callbaks_figure import (
     fig_plot_oil,
     update_tail_production,
 )
-from utils.data import DataUnavailable, daily_production, latest_row, load_dataset, number, select_field
+from utils.data import DataUnavailable, YEARLY_COLUMNS, daily_production, latest_row, load_dataset, number, select_field
 from utils.extract import SECTIONS, facts_table, sections_for_field
 from utils.maps import FIELD_URL, load_field_geometry, load_map_layers, map_document
 from utils.pt import PT_COLUMNS, load_curated, normalise_pt, pt_for_fields
@@ -29,7 +29,7 @@ ROOT = Path(__file__).resolve().parent
 CURRENT_YEAR = datetime.now(timezone.utc).year
 SECTION_NAMES = ["Overview", "Production", "Wells & reservoir", "Reserves", "Investments", "Economics", "Map", "Benchmark", "Data & QA"]
 
-st.set_page_config(page_title="NCS Field Intelligence · SODIR", page_icon="◆", layout="wide")
+st.set_page_config(page_title="North Sea Field Intelligence · SODIR + NSTA", page_icon="◆", layout="wide")
 
 
 # ----------------------------------------------------------------------------- data access
@@ -83,12 +83,19 @@ def get_master(start_threshold=0.0):
     tables = {name: optional_dataset(name) for name in ("reserves", "inplace", "yearly", "wells", "description")}
     user_pt = st.session_state.get("user_pt")
     return compute_master(
-        overview, tables["reserves"], tables["inplace"], tables["yearly"], tables["wells"], tables["description"],
+        available_dataset("overview") if st.session_state.get("database") == "UKCS · NSTA" else overview,
+        tables["reserves"], tables["inplace"], tables["yearly"], tables["wells"], tables["description"],
         user_pt, CURRENT_YEAR, start_threshold,
     ) + (tables,)
 
 
 # ----------------------------------------------------------------------------- presentation helpers
+def clamp_saved_range(key, lower, upper):
+    if key in st.session_state:
+        old_low, old_high = st.session_state[key]
+        st.session_state[key] = (max(lower, min(upper, old_low)), max(lower, min(upper, old_high)))
+
+
 def show_chart(fig, key=None):
     if fig is None:
         st.info("No data available for this field.")
@@ -571,13 +578,123 @@ def economics_workspace(field, tables):
                        file_name=f"{field}_economics_scenario.csv", mime="text/csv")
 
 
+def uk_workspace(section, field, overview):
+    row = overview.loc[overview["fldName"].eq(field)].iloc[0]
+    name = row["field_name"]
+    header("UK continental shelf · NSTA", name.title())
+    st.caption("NSTA public offshore data. Names are matched exactly within the UK catalogue; no SODIR IDs or Norwegian taxes apply.")
+    if section in ("Overview", "Production"):
+        st.warning("UK gas uses gas-to-pipeline volume, not gross associated/dry gas or a guaranteed equivalent of SODIR net sales gas. "
+                   "UK oil-equivalent is a volume-convention proxy: oil + condensate + pipeline gas; separate NGL is unavailable. "
+                   "Surface reporting volumes are not reservoir PVT measurements.")
+        if section == "Overview":
+            st.dataframe(pd.DataFrame([{
+                "Field": name, "Country": "UKCS", "Hydrocarbon phase": row["FIELDTYPE"],
+                "Status": row["STATUS"], "Operator": row["CURR_OPER"],
+                "Depth (m; source label, not inferred reservoir depth)": row["DEPTH_M"],
+                "Discovery well": row["DISC_WELL"],
+            }]), hide_index=True, width="stretch")
+        try:
+            monthly = ukcs.load_monthly(name)
+        except DataUnavailable as exc:
+            st.error(str(exc))
+            return
+        if monthly.empty:
+            st.info("No matching public NSTA field-month production reports.")
+            return
+        st.caption(f"Available monthly reporting: {monthly.index.min():%B %Y}–{monthly.index.max():%B %Y}. Missing months are not zero-filled.")
+        columns = st.columns(4)
+        for container, (source, label) in zip(columns, (
+            ("prfPrdOilNetMillSm3", "Reported oil · million Sm³"),
+            ("prfPrdGasNetBillSm3", "Pipeline gas · billion Sm³"),
+            ("prfPrdCondensateNetMillSm3", "Condensate · million Sm³"),
+            ("prfPrdProducedWaterInFieldMillSm3", "Produced water · million Sm³"),
+        )):
+            container.metric(label, fmt(monthly[source].sum(min_count=1), "{:,.3f}"))
+        if section == "Production":
+            rates = daily_production(monthly)
+            rates = rates.reindex(pd.date_range(rates.index.min(), rates.index.max(), freq="MS"))
+            fig = go.Figure()
+            for col in ("Oil [Sm³/d]", "Condensate [Sm³/d]", "Water [Sm³/d]"):
+                fig.add_scatter(x=rates.index, y=rates[col], name=col, connectgaps=False)
+            show_chart(theme.style(fig, "Monthly liquid production rates", "Monthly volume / calendar days", "NSTA PPRS", dark=dark))
+            gas = go.Figure(go.Scatter(x=rates.index, y=rates["Gas [million Sm³/d]"], name="Pipeline gas", connectgaps=False))
+            gas.update_layout(yaxis_title="Million Sm³/day")
+            show_chart(theme.style(gas, "Monthly gas to pipeline", None, "NSTA PPRS GASPIPVOL", dark=dark))
+            annual = ukcs.load_yearly()
+            reporting = annual.loc[annual["prfInformationCarrier"].eq(field)]
+            st.caption("Annual reporting QA: contiguous partial first/last reporting years are retained without annualisation. "
+                       "Interior incomplete/gapped years and years with duplicate field-month reports have no annual volumes.")
+            st.dataframe(reporting.drop(columns=list(YEARLY_COLUMNS), errors="ignore"), hide_index=True, width="stretch")
+            annual = bm.yearly_long(annual.loc[annual["prfInformationCarrier"].eq(field) & annual["prfYear"].lt(CURRENT_YEAR)])
+            show_chart(figures.yearly_field_figure(annual))
+            ratios = pd.DataFrame({"year": annual["year"],
+                "GOR · Sm³/Sm³ (pipeline gas/oil)": annual["gas"] * 1000 / annual["oil"].where(annual["oil"] > 0),
+                "Water cut": annual["water"] / (annual["water"] + annual["oil"]).where(lambda v: v > 0)})
+            st.dataframe(ratios, hide_index=True, width="stretch")
+        st.dataframe(monthly[list(ukcs.VOLUMES.values())], width="stretch")
+        st.download_button("Download UK field monthly production CSV", monthly.to_csv().encode("utf-8"),
+                           file_name=f"UKCS_{name}_monthly.csv", mime="text/csv")
+        st.link_button("NSTA production source and field definitions", ukcs.PRODUCTION)
+    elif section == "Wells & reservoir":
+        try:
+            wells = ukcs.load_wells(name)
+        except DataUnavailable as exc:
+            st.error(str(exc))
+            return
+        st.caption("Exact NSTA target-field association, including exploration/appraisal wellbores and sidetracks. "
+                   "Constructed does not imply producing. Current classifications do not reconstruct historic active wells.")
+        if wells.empty:
+            st.info("No exact target-field wellbores returned.")
+        else:
+            st.metric("Associated wellbores", str(len(wells)))
+            for col in ("COMPLEDATE", "SPUDDATE"):
+                wells[col] = pd.to_datetime(wells[col], unit="ms", errors="coerce")
+            st.dataframe(wells, hide_index=True, width="stretch")
+            st.download_button("Download UK wellbores CSV", wells.to_csv(index=False).encode("utf-8"),
+                               file_name=f"UKCS_{name}_wells.csv", mime="text/csv")
+        st.info("Reservoir formations, porosity, permeability and detailed PVT are not provided by these connected UK field/well services.")
+        st.link_button("NSTA wellbore source", ukcs.WELLS)
+    elif section == "Map":
+        try:
+            geometry = ukcs.load_geometry(name)
+        except DataUnavailable as exc:
+            st.error(str(exc))
+            return
+        st.iframe(map_document(name, geometry, {}, dark=dark, state_id=st.session_state["map_state_id"],
+                               provider="NSTA"), height=665)
+        st.metric("NSTA field-outline area", f"{geometry['outline_area_km2']:,.2f} km²")
+        st.caption("WGS84 ellipsoidal footprint proxy, not net reservoir or drainage area. Basemaps, measurement and sketch tools are available. "
+                   "No SODIR WMS overlays are applied to UK fields.")
+        st.link_button("NSTA field polygon source", ukcs.FIELDS)
+    elif section == "Data & QA":
+        st.markdown("**Connected UK sources:** offshore field polygons/catalogue, PPRS field-month production, and target-field wellbores.")
+        st.dataframe(pd.DataFrame([
+            dict(dataset="Fields", source=ukcs.FIELDS), dict(dataset="Production", source=ukcs.PRODUCTION),
+            dict(dataset="Wellbores", source=ukcs.WELLS)]), hide_index=True, width="stretch")
+        st.warning("No connected comparable field reserves/in-place, CAPEX, detailed PVT, formations or historic producing-well timeline. "
+                   "Those metrics stay missing; UK economics is not calculated with Norwegian tax rules.")
+    else:
+        st.info(f"{section} is not available for UKCS: a comparable public field-level input has not been verified. "
+                "Use Overview, Production, Wells & reservoir, Map or the combined Benchmark.")
+
+
 def investment_workspace(peers, yearly, wells, color_key, color_column, highlight):
     st.markdown(
         "**Field investment intensity, not operating cost or individual well drilling cost.** "
         "SODIR reports annual investment in nominal million NOK. "
         "All measures use oil equivalent (boe), not oil-only barrels."
     )
+    if "country" in peers:
+        st.caption(f"Investment coverage: {int(peers['country'].eq('NCS').sum())} selected NCS fields are eligible for SODIR costs; "
+                   f"{int(peers['country'].eq('UKCS').sum())} UKCS fields have no connected field CAPEX and cannot contribute to cost metrics.")
+        if not peers["country"].eq("NCS").any():
+            st.info("No investment records are available for the filtered peer set.")
+            return
     raw = optional_dataset("investments")
+    if not raw.empty and peers.index.astype(str).str.startswith(("NCS::", "UKCS::")).any():
+        raw = raw.copy()
+        raw["prfInformationCarrier"] = "NCS::" + raw["prfInformationCarrier"].astype(str)
     try:
         prepared = inv.prepare_investments(raw, CURRENT_YEAR)
     except ValueError as exc:
@@ -685,19 +802,24 @@ def investment_workspace(peers, yearly, wells, color_key, color_column, highligh
 
 
 # ----------------------------------------------------------------------------- sidebar
-st.sidebar.markdown("<div class='eyebrow'>Norwegian continental shelf</div>", unsafe_allow_html=True)
+database = st.sidebar.segmented_control("Database", ["NCS · SODIR", "UKCS · NSTA"],
+                                       default="NCS · SODIR", key="database")
+is_uk = database == "UKCS · NSTA"
+st.sidebar.markdown("<div class='eyebrow'>North Sea field intelligence</div>", unsafe_allow_html=True)
 st.sidebar.title("Field Intelligence")
-st.sidebar.caption("SODIR FactPages · production, reserves, wells and text-derived reservoir facts")
-if st.sidebar.button("Refresh SODIR data", width="stretch"):
+st.sidebar.caption("SODIR + NSTA · switch field database; benchmark across both shelves")
+if st.sidebar.button("Refresh source data", width="stretch"):
     load_dataset.clear()
     load_map_layers.clear()
     load_field_geometry.clear()
     compute_master.clear()
     compute_facts.clear()
     st.session_state.pop("data_failures", None)
+    for loader in (ukcs.load_fields, ukcs.load_yearly, ukcs.load_monthly, ukcs.load_wells, ukcs.load_geometry):
+        loader.clear()
 
 try:
-    overview = available_dataset("overview")
+    overview = ukcs.load_fields() if is_uk else available_dataset("overview")
 except DataUnavailable as exc:
     st.error(str(exc))
     st.info("Try Refresh SODIR data in the sidebar, or retry after a minute. FactMaps can still be opened directly.")
@@ -709,7 +831,8 @@ if not fields:
     st.warning("SODIR returned an empty field catalogue. Please try refreshing.")
     st.stop()
 selected_field = st.sidebar.selectbox(
-    "Field", fields, index=fields.index("OSEBERG") if "OSEBERG" in fields else 0, key="field",
+    "Field", fields, index=fields.index("OSEBERG") if "OSEBERG" in fields else 0,
+    format_func=lambda value: value.removeprefix("UKCS::"), key="field",
 )
 field_changed = st.session_state.get("settings_field") != selected_field
 parameter_prefixes = ("bm_", "cost_", "econ_", "map_", "period_", "tops_")
@@ -731,7 +854,7 @@ section = st.sidebar.radio("Explore", SECTION_NAMES, key="section")
 st.sidebar.divider()
 appearance = st.sidebar.selectbox("Appearance", ["Light", "Dark"], key="appearance")
 dark = appearance == "Dark"
-st.sidebar.caption("Source: Norwegian Offshore Directorate (SODIR). Data cached for one hour; only the active section is loaded.")
+st.sidebar.caption("Sources: SODIR (NCS) and NSTA (UKCS). Production cached one hour. Unknown data are not inferred.")
 
 palette = theme.css_variables(dark)
 st.markdown(
@@ -747,6 +870,13 @@ st.markdown(
 )
 
 # ----------------------------------------------------------------------------- shared loads
+if is_uk and section != "Benchmark":
+    try:
+        uk_workspace(section, selected_field, overview)
+    except (DataUnavailable, ValueError) as exc:
+        st.error(f"Cannot display the selected UK dataset: {exc}")
+    st.stop()
+
 if section in ("Overview", "Production", "Reserves"):
     monthly = optional_dataset("monthly")
     production = select_field(monthly, selected_field, "prfInformationCarrier")
@@ -1030,26 +1160,58 @@ elif section == "Map":
 # ============================================================================= BENCHMARK
 elif section == "Benchmark":
     header("Benchmark", "How does the field compare with its peers?",
-           "Normalised production profiles, reserve intensity, recovery factors, well counts, investment intensity and GOR / water-cut development across NCS fields. "
+           "Production profiles and available reservoir metrics across NCS and UKCS fields. "
            "Filter the peer set by formation, drainage strategy, hydrocarbon phase and volumes; import your own profile or generate an average profile.")
 
     with st.container(border=True):
         c1, c2, c3, c4, c5 = st.columns([1, 1.4, 1, 1, 1])
         product_label = c1.selectbox("Product", list(bm.PRODUCTS), key="bm_product")
         product = bm.PRODUCTS[product_label]
-        basis_label = c2.selectbox("Normalisation", list(bm.BASES), index=2, key="bm_basis")
+        basis_label = c2.selectbox("Normalisation", list(bm.BASES), index=0, key="bm_basis")
         basis = bm.BASES[basis_label]
         x_mode = c3.selectbox("X-axis", ["Years since start", "Calendar year"], key="bm_x")
         x_mode = "years_on" if x_mode.startswith("Years") else "year"
-        color_key = c4.selectbox("Colour by", list(bm.COLOR_OPTIONS), index=1, key="bm_color")
+        color_key = c4.selectbox("Colour by", list(bm.COLOR_OPTIONS), index=0, key="bm_color")
         color_column = bm.COLOR_OPTIONS[color_key]
         start_threshold = c5.selectbox("Start year = first year ≥", ["any production", "5% of peak", "10% of peak", "25% of peak"], index=1, key="bm_start")
         start_threshold = {"any production": 0.0, "5% of peak": 0.05, "10% of peak": 0.10, "25% of peak": 0.25}[start_threshold]
 
-    master, facts, pt, tables = get_master(start_threshold)
-    yearly, wells = tables["yearly"], tables["wells"]
+    country_sel = st.multiselect("Countries in benchmark", ["NCS", "UKCS"], default=["NCS", "UKCS"], key="bm_countries")
+    masters, histories = [], []
+    wells = ukcs.benchmark_wells()
+    if "NCS" in country_sel:
+        try:
+            ncs_master, facts, pt, tables = get_master(start_threshold)
+            ncs_master, ncs_yearly, wells = ukcs.namespace_ncs(ncs_master, tables["yearly"], tables["wells"])
+            ncs_master["production_basis"] = "SODIR reported net product volumes; SODIR oil equivalent"
+            ncs_master["source"] = "https://factpages.sodir.no/en/field/tableview/all"
+            masters.append(ncs_master)
+            histories.append(ncs_yearly)
+        except DataUnavailable as exc:
+            st.warning(f"NCS peers unavailable: {exc} The requested peer set is incomplete.")
+    if "UKCS" in country_sel:
+        try:
+            with st.spinner("Loading UKCS fields and annual production for combined peers…"):
+                uk_fields = ukcs.load_fields()
+                uk_yearly = ukcs.load_yearly()
+                uk_master = ukcs.build_master(uk_fields, uk_yearly, CURRENT_YEAR, start_threshold)
+            masters.append(uk_master)
+            histories.append(uk_yearly)
+        except (DataUnavailable, ValueError) as exc:
+            st.warning(f"UKCS peers unavailable: {exc} The requested peer set is incomplete; UKCS peers are excluded.")
+    if not masters:
+        st.info("Select at least one available country to build the peer set.")
+        st.stop()
+    master, yearly = pd.concat(masters), pd.concat(histories, ignore_index=True)
+    highlight_key = selected_field if is_uk else "NCS::" + selected_field
+    st.warning("Cross-country basis: UK gas is gas to pipeline, not gross production or a guaranteed equivalent of SODIR net gas. "
+               "UK OE proxy excludes separate NGL (not available). Differences in reporting/allocation can affect profiles and GOR. "
+               "UK reserves/in-place, formations, CAPEX and historical producing-well counts are not connected; "
+               "UK fields remain in absolute production and ratio comparisons but are excluded where those inputs are required.")
+    st.caption("UK start years, cumulative volumes and peaks describe available valid reports, not a guarantee of full lifetime coverage. "
+               "Duplicate/gapped annual reports are excluded; contiguous partial reporting boundary years are retained without annualisation.")
     if master.empty or yearly.empty:
-        st.info("Benchmarking needs the SODIR field, reserves and yearly production tables.")
+        st.info("Benchmarking needs an available field catalogue and annual production history.")
         st.stop()
 
     with st.expander("Peer-set filters", expanded=True):
@@ -1071,11 +1233,14 @@ elif section == "Benchmark":
         subareas_sel = d2.multiselect("Production sub-area", sorted(master["sub_area"].dropna().unique()), key="bm_subarea")
         h1, h2, h3, h4 = st.columns(4)
         max_inplace = ceil_ten(master["inplace_oe"].max())
+        clamp_saved_range("bm_inplace", 0.0, max_inplace)
         inplace_range = h1.slider("In-place volume · million Sm³ o.e.", 0.0, max_inplace, (0.0, max_inplace), key="bm_inplace")
         max_rec = ceil_ten(master["recoverable_oe"].max())
+        clamp_saved_range("bm_rec", 0.0, max_rec)
         rec_range = h2.slider("Recoverable · million Sm³ o.e.", 0.0, max_rec, (0.0, max_rec), key="bm_rec")
         years = master["start_year"].dropna()
         y_min, y_max = (int(years.min()), int(years.max())) if not years.empty else (1970, CURRENT_YEAR)
+        clamp_saved_range("bm_startrange", y_min, max(y_max, y_min + 1))
         start_range = h3.slider("Production start year", y_min, max(y_max, y_min + 1), (y_min, max(y_max, y_min + 1)), key="bm_startrange")
         min_years = h4.number_input("Minimum years on production", 0, 60, 3, key="bm_minyears")
         include_missing = st.checkbox("Keep fields without in-place / recoverable data in the peer set", value=True, key="bm_missing")
@@ -1086,17 +1251,33 @@ elif section == "Benchmark":
         min_years=int(min_years), hpht={"All": None, "Non-HPHT (stated) only": False, "HPHT only": True}[hpht_sel],
         lithologies=lith_sel, include_missing=include_missing,
     )
+    mask &= master["country"].isin(country_sel)
     if development_sel:
         mask &= master["development_type"].isin(development_sel)
     if subareas_sel:
         mask &= master["sub_area"].isin(subareas_sel)
     peers = master.loc[mask]
     peer_fields = list(peers.index)
-    highlight = selected_field if selected_field in peers.index else None
-    if selected_field not in peers.index:
+    highlight = highlight_key if highlight_key in peers.index else None
+    if highlight_key not in peers.index:
         st.caption(f"{selected_field.title()} is outside the current peer set; it is not highlighted.")
 
     profiles = bm.normalised_profiles(yearly, master, product, basis, wells=wells, current_year=CURRENT_YEAR, fields=peer_fields)
+    for column in ("country", "field_name", "source", "production_basis"):
+        profiles[column] = profiles["fldName"].map(master[column])
+    used = set(profiles["fldName"]) if not profiles.empty else set()
+    coverage = peers[["country", "field_name", "source", "production_basis"]].copy()
+    coverage["included_in_selected_profile"] = coverage.index.isin(used)
+    reason = {"absolute": "No reported positive production for selected product",
+              "per_well": "No verified annual producing-well denominator",
+              "pct_recoverable": "No usable field recoverable volume",
+              "pct_inplace": "No usable field in-place volume"}[basis]
+    coverage["exclusion_reason"] = coverage["included_in_selected_profile"].map({True: "", False: reason})
+    st.caption(f"Selected peer fields: {len(peers)}; fields contributing to this profile metric: {len(used)}. "
+               "Country-qualified names prevent same-name field collisions. Current calendar year is excluded.")
+    st.dataframe(coverage, width="stretch")
+    st.download_button("Download metric coverage CSV", coverage.to_csv().encode("utf-8"),
+                       file_name="benchmark_metric_coverage.csv", mime="text/csv")
     env = bm.envelope(profiles)
     unit = bm.PRODUCT_UNITS[product]
     y_label = {"absolute": f"{product_label} · {unit} per year", "per_well": f"{product_label} · {unit} per producing well per year",
@@ -1209,7 +1390,8 @@ elif section == "Benchmark":
             st.caption("Choose a percentage normalisation (% of recoverable or % of in place) to generate a scaled average profile.")
 
     with tabs[6]:
-        st.markdown("SODIR publishes no pressure/temperature table. Values come from, in order: your uploaded table, the built-in curated literature table, numbers stated in the SODIR text, or a hydrostatic (0.101 bar/m) and geothermal (4 °C + 35 °C/km) estimate from the text depth. HPHT fields never receive a pressure estimate.")
+        st.markdown("P/T enrichment applies to NCS fields only; UK values are unavailable in these connectors. "
+                    "SODIR publishes no pressure/temperature table. Values come from, in order: your uploaded table, the built-in curated literature table, numbers stated in the SODIR text, or a hydrostatic (0.101 bar/m) and geothermal (4 °C + 35 °C/km) estimate from the text depth. HPHT fields never receive a pressure estimate.")
         show_chart(figures.pt_figure(peers, highlight=highlight, dark=dark))
         p1, p2 = st.columns([1.3, 1])
         with p1:
@@ -1230,7 +1412,7 @@ elif section == "Benchmark":
                 st.rerun()
 
     with tabs[7]:
-        columns = ["hc_type", "area", "status", "drainage_strategy", "formations_text", "groups_text", "main_age", "main_lithology",
+        columns = ["country", "field_name", "source", "production_basis", "hc_type", "area", "status", "drainage_strategy", "formations_text", "groups_text", "main_age", "main_lithology",
                    "depth_mid_m", "hpht_label", "development_type", "gas_export_route", "liquids_export_route",
                    "reservoir_thickness_min_m", "reservoir_thickness_max_m",
                    "reservoir_footprint_min_km2", "reservoir_footprint_max_km2",
